@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Check, ChevronDown, ChevronLeft, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, Reload, Share, Trash, User } from '@openai/apps-sdk-ui/components/Icon'
 import { uid, subscribeBoard, getBoard, boardPath, normalizeBoard } from '../storage.js'
 import { resolveMemberHandles, pullShared, createInvite, inviteByHandle, getMembers, revokeCollaborator, groupCollaborators, collaboratorForHost, selfCollaborator, inviteDeliveryNotice, shareBoard, cacheSubscriptionIsAuthoritative, rememberSharedState, sharedBoardPollDelay, acceptSharedPoll, createSharedRefreshLifecycle } from '../sync.js'
-import { applyBoardOp, cardMoveAnchor, columnMoveAnchor, cardPullUrls } from '../operations.js'
+import { applyBoardOp, columnMoveAnchor, cardPullUrls } from '../operations.js'
 import { parsePullRequestUrl, pullRequestStatus } from '../prMatching.js'
 import { acknowledgeRecoveredBoardOps, applyPendingBoardOps, enqueuePendingBoardOp, readPendingBoardOps, readRecoveredBoardOps, exportUnsyncedBoardOps, replayPendingBoardOps, hasRecoverableBoardOps } from '../pendingOps.js'
 import { createBoardRepository, isRetryableBoardError, replayOutcomeForBoardError } from '../boardRepository.js'
@@ -871,6 +871,12 @@ export default function Board({
   const cardSheetRef = useModalFocus(Boolean(openCardId), () => { setOpenCardId(null); setDraftCard(null) })
   useEffect(() => { setConfirmDeleteCard(false) }, [openCardId])
   const columnConfirmRef = useModalFocus(confirmDeleteCol, () => setConfirmDeleteCol(null))
+  const deleteCardButtonRef = useRef(null)
+  const closeDeleteCardConfirm = () => {
+    setConfirmDeleteCard(false)
+    requestAnimationFrame(() => deleteCardButtonRef.current?.focus())
+  }
+  const cardDeleteConfirmRef = useModalFocus(confirmDeleteCard, closeDeleteCardConfirm)
   boardRef.current = board
   shareRef.current = share
   onlineRef.current = online
@@ -1409,13 +1415,6 @@ export default function Board({
     mutate({ type: 'move-card', cardId, toColumnId: toColId, beforeCardId })
   }
 
-  const reorderCard = (cardId, offset) => {
-    const column = boardRef.current?.columns.find(item => item.cardIds.includes(cardId))
-    if (!column) return
-    const beforeCardId = cardMoveAnchor(column.cardIds, cardId, offset)
-    if (beforeCardId !== undefined) moveCard(cardId, column.id, beforeCardId)
-  }
-
   const addColumn = () => {
     const id = uid()
     mutate({
@@ -1677,7 +1676,6 @@ export default function Board({
     ? setDraftCard(current => ({ ...current, card: { ...current.card, ...patch } }))
     : updateCard(openCard_.id, patch)
   const openCardColumn = openCard_ ? board.columns.find(column => column.cardIds.includes(openCard_.id)) : null
-  const openCardIndex = openCardColumn ? openCardColumn.cardIds.indexOf(openCard_.id) : -1
   return (
     <>
       <div className="kb-header kb-board-header">
@@ -2030,27 +2028,6 @@ export default function Board({
               </div>}
             </div>}
 
-            {access.canWrite && openCardColumn && <div className="kb-desktop-only">
-              <h3>Position</h3>
-              <div className="kb-position-actions kb-field-spaced">
-                <button
-                  className="kb-btn kb-btn-quiet"
-                  disabled={openCardIndex <= 0}
-                  onClick={() => reorderCard(openCard_.id, -1)}
-                >
-                  <span className="kb-position-up" aria-hidden="true"><ChevronDown /></span>
-                  Move up
-                </button>
-                <button
-                  className="kb-btn kb-btn-quiet"
-                  disabled={openCardIndex < 0 || openCardIndex >= openCardColumn.cardIds.length - 1}
-                  onClick={() => reorderCard(openCard_.id, 1)}
-                >
-                  <ChevronDown aria-hidden="true" />
-                  Move down
-                </button>
-              </div>
-            </div>}
             {access.canWrite && <div className="kb-desktop-only">
               <h3>Move to</h3>
               <div className="kb-chips kb-field-spaced">
@@ -2070,15 +2047,15 @@ export default function Board({
               </div>
             </div>}
             {access.canWrite && (confirmDeleteCard
-              ? <div className="kb-col-confirm kb-card-delete-confirm" role="alertdialog" aria-label="Delete card">
+              ? <div ref={cardDeleteConfirmRef} tabIndex={-1} className="kb-col-confirm kb-card-delete-confirm" role="alertdialog" aria-modal="true" aria-label="Delete card">
                 <div className="kb-col-confirm-copy">Delete this card{share ? ' for everyone on this board' : ''}? This can’t be undone.</div>
                 <div className="kb-col-confirm-actions">
-                  <button className="kb-btn kb-btn-quiet" autoFocus onClick={() => setConfirmDeleteCard(false)}>Cancel</button>
+                  <button className="kb-btn kb-btn-quiet" onClick={closeDeleteCardConfirm}>Cancel</button>
                   <button className="kb-btn kb-btn-danger" onClick={() => deleteCard(openCard_.id)}>Delete</button>
                 </div>
               </div>
               : <div className="kb-card-danger-zone">
-                <button className="kb-btn kb-delete-card" onClick={() => setConfirmDeleteCard(true)}>
+                <button ref={deleteCardButtonRef} className="kb-btn kb-delete-card" onClick={() => setConfirmDeleteCard(true)}>
                   <Trash aria-hidden="true" />
                   Delete card
                 </button>
