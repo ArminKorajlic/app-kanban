@@ -260,7 +260,7 @@ function BoardSwitcher({ board, boardId, boards, shareMap, canWrite, open, onOpe
   )
 }
 
-function AssigneePicker({ card, canWrite, members, share, onUpdate }) {
+function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = false }) {
   const rootRef = useRef(null)
   const searchRef = useRef(null)
   const [open, setOpen] = useState(false)
@@ -327,8 +327,9 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate }) {
     <div className="kb-assignee-picker" ref={rootRef}>
       <button
         type="button"
-        className="kb-assignee-trigger"
+        className={`kb-assignee-trigger${iconOnly ? ' kb-icon-trigger' : ''}`}
         aria-label={selectedLabel ? `Assignee: ${selectedLabel}` : 'Choose assignee'}
+        title={selectedLabel || 'Unassigned'}
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={!canWrite}
@@ -337,8 +338,8 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate }) {
         {selectedAvatar
           ? <span className="kb-assignee-avatar" style={{ background: selectedAvatar.background, color: selectedAvatar.color }}>{selectedAvatar.initials}</span>
           : <span className="kb-assignee-avatar kb-assignee-avatar-empty"><User aria-hidden="true" /></span>}
-        <span className={`kb-assignee-trigger-label${selectedLabel ? '' : ' is-empty'}`}>{selectedLabel || 'Unassigned'}</span>
-        {canWrite && <ChevronDown aria-hidden="true" />}
+        {!iconOnly && <span className={`kb-assignee-trigger-label${selectedLabel ? '' : ' is-empty'}`}>{selectedLabel || 'Unassigned'}</span>}
+        {canWrite && !iconOnly && <ChevronDown aria-hidden="true" />}
       </button>
       {open && createPortal(<>
         <div className="kb-assignee-backdrop" aria-hidden="true" onClick={() => setOpen(false)} />
@@ -393,6 +394,50 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate }) {
       </>, document.body)}
     </div>
   )
+}
+
+function LabelPicker({ label, canWrite, onChange }) {
+  const rootRef = useRef(null)
+  const [open, setOpen] = useState(false)
+  const menuRef = useModalFocus(open, () => setOpen(false))
+  const current = LABELS[label] ? label : 'none'
+  useEffect(() => {
+    if (!open) return undefined
+    const closeOnOutsidePress = event => { if (!rootRef.current?.contains(event.target)) setOpen(false) }
+    document.addEventListener('pointerdown', closeOnOutsidePress)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePress)
+  }, [open])
+  if (!canWrite && current === 'none') return null
+  const choose = name => { onChange(name); setOpen(false) }
+  return <div className="kb-label-picker" ref={rootRef}>
+    <button
+      type="button"
+      className="kb-label-trigger kb-icon-trigger"
+      aria-label={current === 'none' ? 'Choose label' : `Label: ${current}`}
+      title={current === 'none' ? 'No label' : `Label: ${current}`}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      disabled={!canWrite}
+      onClick={() => setOpen(value => !value)}
+    >
+      <span className={`kb-property-dot${current === 'none' ? ' kb-label-dot-empty' : ''}`} style={current === 'none' ? undefined : { background: LABELS[current] }} />
+    </button>
+    {open && <div ref={menuRef} className="kb-label-menu" role="dialog" aria-label="Choose label">
+      <div className="kb-swatches">
+        {Object.entries(LABELS).map(([name, color]) => (
+          <button
+            key={name}
+            type="button"
+            className={`kb-swatch${name === 'none' ? ' kb-none' : ''}${current === name ? ' kb-on' : ''}`}
+            style={name === 'none' ? undefined : { background: color }}
+            aria-label={name === 'none' ? 'No label' : `Label ${name}`}
+            aria-pressed={current === name}
+            onClick={() => choose(name)}
+          />
+        ))}
+      </div>
+    </div>}
+  </div>
 }
 
 function AutoGrowTextarea({ valueKey, onCommit, onCancel, ...props }) {
@@ -460,11 +505,9 @@ function PullRequestReferences({ card, canWrite, online, statuses, onUpdate, onR
     setEditor(null); setDraft(''); setError('')
   }
   const remove = url => onUpdate(url, '')
-  return <section className="kb-pr-reference" aria-labelledby="kb-pr-reference-title">
-    <div className="kb-section-heading">
-      <h3 id="kb-pr-reference-title">Linked pull requests</h3>
-      {online && urls.some(parsePullRequestUrl) && <button type="button" className="kb-iconbtn kb-pr-refresh" aria-label="Refresh pull request statuses" title="Refresh statuses" onClick={onRefresh}><Reload /></button>}
-    </div>
+  const canRefresh = online && urls.some(parsePullRequestUrl)
+  if (!urls.length && !canWrite) return null
+  return <section className="kb-pr-reference" aria-label="Linked pull requests">
     {urls.length > 0 && <div className="kb-pr-list">
       {urls.map(url => {
         const status = statusFor(url)
@@ -482,11 +525,14 @@ function PullRequestReferences({ card, canWrite, online, statuses, onUpdate, onR
         </div>
       })}
     </div>}
-    {canWrite && (editor === 'add' ? <form className="kb-pr-editor" onSubmit={event => { event.preventDefault(); save() }}>
+    {editor === 'add' ? <form className="kb-pr-editor" onSubmit={event => { event.preventDefault(); save() }}>
       <input className="kb-input" type="url" autoFocus value={draft} placeholder="https://github.com/owner/repo/pull/123" onChange={event => { setDraft(event.target.value); setError('') }} />
       <button type="submit" className="kb-btn">Add</button>
       <button type="button" className="kb-btn kb-pr-cancel" onClick={() => { setEditor(null); setDraft('') }}>Cancel</button>
-    </form> : <button type="button" className="kb-btn kb-pr-add" onClick={() => { setEditor('add'); setDraft('') }}><Plus /> Add pull request</button>)}
+    </form> : (canWrite || canRefresh) && <div className="kb-pr-footer">
+      {canWrite && <button type="button" className="kb-btn kb-pr-add" onClick={() => { setEditor('add'); setDraft('') }}><Plus /> Add pull request</button>}
+      {canRefresh && <button type="button" className="kb-iconbtn kb-pr-refresh" aria-label="Refresh pull request statuses" title="Refresh statuses" onClick={onRefresh}><Reload /></button>}
+    </div>}
     {hints.map(hint => <p className="kb-pr-hint" key={hint}>{hint}</p>)}
     {error && <p className="kb-attachment-error" role="alert">{error}</p>}
   </section>
@@ -511,9 +557,10 @@ function CardTitleEditor({ card, canWrite, onCommit, onCancel }) {
     aria-label="Card title"
     onCommit={value => {
       const next = value.trim()
+      // An untitled draft stays open on blur so the header's label and
+      // assignee controls can be used first; Done or Escape discards it.
       if (!next) {
-        if (!card.title) onCancel?.()
-        else setEditing(false)
+        if (card.title) setEditing(false)
         return
       }
       if (next !== card.title && onCommit(next) === false) return
@@ -559,6 +606,7 @@ function ChecklistEditor({ checklist, canWrite, onAdd, onToggle, onDelete, onEdi
     onAdd(value)
     setText('')
   }
+  if (!checklist.length && !canWrite) return null
   return (
     <div className="kb-checklist">
       {checklist.map(item => (
@@ -593,7 +641,6 @@ function ChecklistEditor({ checklist, canWrite, onAdd, onToggle, onDelete, onEdi
         />
         <button className="kb-btn kb-btn-primary" disabled={!text.trim()} onClick={submit}>Add</button>
       </div>}
-      {!checklist.length && !canWrite && <div className="kb-empty">No checklist items</div>}
     </div>
   )
 }
@@ -799,6 +846,7 @@ export default function Board({
   const [recoveredCount, setRecoveredCount] = useState(0)
   const [attachmentBusy, setAttachmentBusy] = useState(false)
   const [attachmentError, setAttachmentError] = useState('')
+  const [attachmentDropActive, setAttachmentDropActive] = useState(false)
   const [pullStatuses, setPullStatuses] = useState({})
   const [pullStatusRefresh, setPullStatusRefresh] = useState(0)
 
@@ -1618,6 +1666,10 @@ export default function Board({
 
   const isDraftCard = draftCard?.boardId === boardId && draftCard.card.id === openCardId
   const openCard_ = openCardId ? board.cards[openCardId] || (isDraftCard ? draftCard.card : null) : null
+  // Header choices on an untitled draft ride along into its add-card.
+  const patchOpenCard = patch => isDraftCard
+    ? setDraftCard(current => ({ ...current, card: { ...current.card, ...patch } }))
+    : updateCard(openCard_.id, patch)
   const openCardColumn = openCard_ ? board.columns.find(column => column.cardIds.includes(openCard_.id)) : null
   const openCardIndex = openCardColumn ? openCardColumn.cardIds.indexOf(openCard_.id) : -1
   return (
@@ -1848,11 +1900,19 @@ export default function Board({
             aria-label="Card details"
             onPaste={attachFromPaste}
           >
-            <div className="kb-card-toolbar kb-mobile-only">
-              <span className="kb-card-toolbar-title">Card details</span>
-              <button className="kb-btn kb-btn-primary kb-card-toolbar-done" type="button" onClick={() => { setOpenCardId(null); setDraftCard(null) }}>{isDraftCard ? 'Cancel' : 'Done'}</button>
+            <div className="kb-card-toolbar">
+              <span className="kb-card-toolbar-title">{isDraftCard ? 'New card' : ''}</span>
+              <LabelPicker label={openCard_.label} canWrite={access.canWrite} onChange={label => patchOpenCard({ label })} />
+              <AssigneePicker
+                card={openCard_}
+                canWrite={access.canWrite}
+                members={displayMembers}
+                share={share}
+                iconOnly
+                onUpdate={patchOpenCard}
+              />
+              <button className="kb-btn kb-btn-primary kb-card-toolbar-done" type="button" onClick={() => { setOpenCardId(null); setDraftCard(null) }}>Done</button>
             </div>
-            <div className="kb-sheet-grab kb-desktop-only" />
             <CardTitleEditor card={openCard_} canWrite={access.canWrite} onCommit={title => {
               if (!isDraftCard) return updateCard(openCard_.id, { title })
               const saved = mutate({ type: 'add-card', columnId: draftCard.columnId, card: { ...draftCard.card, title } })
@@ -1861,18 +1921,10 @@ export default function Board({
             }} onCancel={() => { if (isDraftCard) { setDraftCard(null); setOpenCardId(null) } }} />
             {!isDraftCard && <>
             <CardNotesEditor card={openCard_} canWrite={access.canWrite} onCommit={notes => updateCard(openCard_.id, { notes })} />
-            <PullRequestReferences card={openCard_} canWrite={access.canWrite} online={online} statuses={pullStatuses} onUpdate={(previousUrl, nextUrl) => mutate({ type: 'edit-pull-request', cardId: openCard_.id, previousUrl, nextUrl })} onRefresh={() => setPullStatusRefresh(value => value + 1)} />
 
-            <div>
-              <div className="kb-section-heading"><h3>Checklist</h3>{Array.isArray(openCard_.checklist) && openCard_.checklist.length > 0 && <span>{openCard_.checklist.filter(item => item.done).length}/{openCard_.checklist.length}</span>}</div>
-              <ChecklistEditor checklist={Array.isArray(openCard_.checklist) ? openCard_.checklist : []} canWrite={access.canWrite} onAdd={text => addCheckItem(openCard_.id, text)} onToggle={itemId => toggleCheckItem(openCard_.id, itemId)} onDelete={itemId => removeCheckItem(openCard_.id, itemId)} onEdit={(itemId, text) => editCheckItem(openCard_.id, itemId, text)} />
-            </div>
+            <ChecklistEditor checklist={Array.isArray(openCard_.checklist) ? openCard_.checklist : []} canWrite={access.canWrite} onAdd={text => addCheckItem(openCard_.id, text)} onToggle={itemId => toggleCheckItem(openCard_.id, itemId)} onDelete={itemId => removeCheckItem(openCard_.id, itemId)} onEdit={(itemId, text) => editCheckItem(openCard_.id, itemId, text)} />
 
-            <section className="kb-attachments" aria-labelledby="kb-attachments-title">
-              <div className="kb-section-heading">
-                <h3 id="kb-attachments-title">Attachments</h3>
-                <span>{openCard_.attachments?.length || 0}/{MAX_CARD_ATTACHMENTS}</span>
-              </div>
+            {(access.canWrite || !!openCard_.attachments?.length) && <section className="kb-attachments" aria-label="Attachments">
               {!!openCard_.attachments?.some(isPreviewImage) && <div className="kb-image-grid">
                 {openCard_.attachments.filter(isPreviewImage).map(attachment => <figure className="kb-image" key={attachment.id}>
                   <button type="button" className="kb-image-button" aria-label={`Preview ${attachment.name || 'image'}`} onClick={() => setPreviewAttachment(attachment)}><AttachmentImage boardId={boardId} share={share} attachment={attachment} className="kb-image-preview" alt={attachment.name || 'Card image'} /></button>
@@ -1913,24 +1965,28 @@ export default function Board({
                   multiple
                   onChange={attachFromInput}
                 />
-                <div className="kb-attach-actions">
-                  <button
-                    className="kb-btn kb-btn-quiet kb-attach-button"
-                    type="button"
-                    disabled={attachmentBusy || (openCard_.attachments?.length || 0) >= MAX_CARD_ATTACHMENTS}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Paperclip />
-                    {attachmentBusy ? 'Adding files…' : 'Attach files'}
-                  </button>
-                  <span className="kb-paste-hint">or paste with ⌘/Ctrl+V</span>
-                </div>
+                <button
+                  className={`kb-attach-drop${attachmentDropActive ? ' is-dragging' : ''}`}
+                  type="button"
+                  disabled={attachmentBusy || (openCard_.attachments?.length || 0) >= MAX_CARD_ATTACHMENTS}
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={event => { if (event.dataTransfer?.types?.includes('Files')) { event.preventDefault(); setAttachmentDropActive(true) } }}
+                  onDragLeave={() => setAttachmentDropActive(false)}
+                  onDrop={event => { event.preventDefault(); setAttachmentDropActive(false); attachFiles(event.dataTransfer?.files) }}
+                >
+                  <span className="kb-attach-drop-icon"><Paperclip aria-hidden="true" /></span>
+                  <span className="kb-attach-drop-copy">
+                    <strong>{attachmentBusy ? 'Adding files…' : 'Add attachment'}</strong>
+                    <small>{(openCard_.attachments?.length || 0) >= MAX_CARD_ATTACHMENTS
+                      ? `Limit of ${MAX_CARD_ATTACHMENTS} reached`
+                      : <>Images or files · <span className="kb-desktop-only-inline">drop or </span>paste here{openCard_.attachments?.length ? ` · ${openCard_.attachments.length} of ${MAX_CARD_ATTACHMENTS}` : ''}</>}</small>
+                  </span>
+                </button>
               </>}
               {attachmentError && <p className="kb-attachment-error" role="alert">{attachmentError}</p>}
-              {!openCard_.attachments?.length && !access.canWrite && <div className="kb-empty">No attachments</div>}
-            </section>
+            </section>}
 
-            <div className="kb-property-list kb-mobile-only">
+            <div className="kb-property-list">
               <div className="kb-property-row">
                 <span className="kb-property-label">Due date</span>
                 <input
@@ -1942,39 +1998,9 @@ export default function Board({
                   onChange={event => updateCard(openCard_.id, { due: event.target.value })}
                 />
               </div>
-              <div className="kb-property-row">
-                <span className="kb-property-label">Assignee</span>
-                <AssigneePicker
-                  card={openCard_}
-                  canWrite={access.canWrite}
-                  members={displayMembers}
-                  share={share}
-                  onUpdate={patch => updateCard(openCard_.id, patch)}
-                />
-              </div>
-              {access.canWrite && <details className="kb-property-details">
-                <summary className="kb-property-row">
-                  <span className="kb-property-label">Label</span>
-                  <span className="kb-property-value">
-                    {(openCard_.label || 'none') === 'none'
-                      ? 'None'
-                      : <><span className="kb-property-dot" style={{ background: LABELS[openCard_.label] }} />{openCard_.label}</>}
-                    <ChevronDown aria-hidden="true" />
-                  </span>
-                </summary>
-                <div className="kb-swatches kb-property-options">
-                  {Object.entries(LABELS).map(([name, color]) => (
-                    <button
-                      key={name}
-                      className={`kb-swatch${name === 'none' ? ' kb-none' : ''}${(openCard_.label || 'none') === name ? ' kb-on' : ''}`}
-                      style={name === 'none' ? undefined : { background: color }}
-                      aria-label={`Label ${name}`}
-                      onClick={() => updateCard(openCard_.id, { label: name })}
-                    />
-                  ))}
-                </div>
-              </details>}
             </div>
+
+            <PullRequestReferences card={openCard_} canWrite={access.canWrite} online={online} statuses={pullStatuses} onUpdate={(previousUrl, nextUrl) => mutate({ type: 'edit-pull-request', cardId: openCard_.id, previousUrl, nextUrl })} onRefresh={() => setPullStatusRefresh(value => value + 1)} />
 
             {openCardColumn && <div className="kb-status-block kb-mobile-only">
               <h3>Status</h3>
@@ -1996,43 +2022,6 @@ export default function Board({
               </div>}
             </div>}
 
-            <div className="kb-card-meta-grid kb-desktop-only">
-              <div className="kb-card-field">
-                <h3>Due date</h3>
-                <input
-                  className="kb-input kb-date-input kb-field-spaced"
-                  type="date"
-                  value={openCard_.due || ''}
-                  aria-label="Card due date"
-                  readOnly={!access.canWrite}
-                  onChange={event => updateCard(openCard_.id, { due: event.target.value })}
-                />
-              </div>
-              <div className="kb-card-field">
-                <h3>Assignee</h3>
-                <AssigneePicker
-                  card={openCard_}
-                  canWrite={access.canWrite}
-                  members={displayMembers}
-                  share={share}
-                  onUpdate={patch => updateCard(openCard_.id, patch)}
-                />
-              </div>
-            </div>
-            {access.canWrite && <div className="kb-desktop-only">
-              <h3>Label</h3>
-              <div className="kb-swatches kb-field-spaced">
-                {Object.entries(LABELS).map(([name, color]) => (
-                  <button
-                    key={name}
-                    className={`kb-swatch${name === 'none' ? ' kb-none' : ''}${(openCard_.label || 'none') === name ? ' kb-on' : ''}`}
-                    style={name === 'none' ? undefined : { background: color }}
-                    aria-label={`Label ${name}`}
-                    onClick={() => updateCard(openCard_.id, { label: name })}
-                  />
-                ))}
-              </div>
-            </div>}
             {access.canWrite && openCardColumn && <div className="kb-desktop-only">
               <h3>Position</h3>
               <div className="kb-position-actions kb-field-spaced">
@@ -2079,12 +2068,11 @@ export default function Board({
               </button>
             </div>}
 
-            <div className="kb-sheet-row kb-sheet-row-between kb-card-actions kb-desktop-only">
-              {access.canWrite && <button className="kb-btn kb-btn-quiet kb-danger" onClick={() => deleteCard(openCard_.id)}>
+            {access.canWrite && <div className="kb-card-actions kb-desktop-only">
+              <button className="kb-btn kb-btn-quiet kb-danger" onClick={() => deleteCard(openCard_.id)}>
                 Delete card
-              </button>}
-              <button className="kb-btn kb-btn-primary" onClick={() => setOpenCardId(null)}>Done</button>
-            </div>
+              </button>
+            </div>}
             </>}
           </div>
         </>
