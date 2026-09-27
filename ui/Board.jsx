@@ -849,8 +849,6 @@ export default function Board({
   const [attachmentBusy, setAttachmentBusy] = useState(false)
   const [attachmentError, setAttachmentError] = useState('')
   const [attachmentDropActive, setAttachmentDropActive] = useState(false)
-  // A card created in this sheet keeps its "New card" heading until the sheet closes.
-  const [createdCardId, setCreatedCardId] = useState(null)
   const [pullStatuses, setPullStatuses] = useState({})
   const [pullStatusRefresh, setPullStatusRefresh] = useState(0)
 
@@ -870,7 +868,6 @@ export default function Board({
   const lastInteractionAtRef = useRef(Date.now())
   const fileInputRef = useRef(null)
   const cardSheetRef = useModalFocus(Boolean(openCardId), () => { setOpenCardId(null); setDraftCard(null) })
-  useEffect(() => { if (openCardId !== createdCardId) setCreatedCardId(null) }, [openCardId])
   const columnConfirmRef = useModalFocus(confirmDeleteCol, () => setConfirmDeleteCol(null))
   boardRef.current = board
   shareRef.current = share
@@ -1908,7 +1905,7 @@ export default function Board({
             onPaste={attachFromPaste}
           >
             <div className="kb-card-toolbar">
-              <span className="kb-card-toolbar-title">{isDraftCard || openCardId === createdCardId ? 'New card' : ''}</span>
+              <span className="kb-card-toolbar-title">New card</span>
               <LabelPicker label={openCard_.label} canWrite={access.canWrite} onChange={label => patchOpenCard({ label })} />
               <AssigneePicker
                 card={openCard_}
@@ -1923,7 +1920,7 @@ export default function Board({
             <CardTitleEditor card={openCard_} canWrite={access.canWrite} onCommit={title => {
               if (!isDraftCard) return updateCard(openCard_.id, { title })
               const saved = mutate({ type: 'add-card', columnId: draftCard.columnId, card: { ...draftCard.card, title } })
-              if (saved) { setCreatedCardId(draftCard.card.id); setDraftCard(null); window.mobius?.signal?.('item_created', { type: 'card' }) }
+              if (saved) { setDraftCard(null); window.mobius?.signal?.('item_created', { type: 'card' }) }
               return saved
             }} onCancel={() => { if (isDraftCard) { setDraftCard(null); setOpenCardId(null) } }} />
             {!isDraftCard && <>
