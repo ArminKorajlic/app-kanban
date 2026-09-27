@@ -491,8 +491,8 @@ function pullRequestLabel(url) {
   try { return new URL(url).hostname } catch { return 'Link' }
 }
 
-// Statuses are keyed by URL. Offline, or for a link that is not a GitHub PR,
-// there is nothing to check, so no status pill is shown.
+// Statuses are keyed by URL. Offline, nothing new is fetched: a card keeps its
+// last known status, and a link never checked (or not a GitHub PR) shows none.
 function PullRequestReferences({ card, canWrite, online, statuses, onUpdate, onRefresh }) {
   const urls = cardPullUrls(card)
   const statusFor = url => (parsePullRequestUrl(url) ? statuses[url] || (online ? { label: 'Checking…', tone: 'unknown' } : null) : null)
