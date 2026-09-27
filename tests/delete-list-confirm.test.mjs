@@ -29,3 +29,11 @@ test('the list-delete confirmation focuses Cancel, not the destructive action', 
 test('the list-delete confirmation uses its dedicated card styling', () => {
   assert.match(CSS, /\.kb-col-confirm \{[^}]*border-radius/s)
 })
+
+test('deleting a card always asks first, and Cancel comes before Delete', () => {
+  assert.match(board, /onClick=\{\(\) => setConfirmDeleteCard\(true\)\}/)
+  assert.doesNotMatch(board, /kb-delete-card" onClick=\{\(\) => deleteCard\(/)
+  const start = board.indexOf('kb-card-delete-confirm')
+  const block = board.slice(start, board.indexOf('</div>\n              </div>', start))
+  assert.ok(start !== -1 && block.indexOf('>Cancel<') < block.indexOf('>Delete<'))
+})

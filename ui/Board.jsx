@@ -831,6 +831,7 @@ export default function Board({
   const [draftCard, setDraftCard] = useState(null)
   const [previewAttachment, setPreviewAttachment] = useState(null)
   const [confirmDeleteCol, setConfirmDeleteCol] = useState(null)
+  const [confirmDeleteCard, setConfirmDeleteCard] = useState(false)
   const [drag, setDrag] = useState(null)
   const [shareOpen, setShareOpen] = useState(false)
   const [syncNote, setSyncNote] = useState('')
@@ -868,6 +869,7 @@ export default function Board({
   const lastInteractionAtRef = useRef(Date.now())
   const fileInputRef = useRef(null)
   const cardSheetRef = useModalFocus(Boolean(openCardId), () => { setOpenCardId(null); setDraftCard(null) })
+  useEffect(() => { setConfirmDeleteCard(false) }, [openCardId])
   const columnConfirmRef = useModalFocus(confirmDeleteCol, () => setConfirmDeleteCol(null))
   boardRef.current = board
   shareRef.current = share
@@ -1695,11 +1697,13 @@ export default function Board({
           onCreate={onCreateBoard}
         />
         <div className="kb-header-spacer" />
-        {(queuedCount > 0 || accessStatus) && <span className="kb-offline">
-          {queuedCount > 0 ? `${queuedCount} change${queuedCount === 1 ? '' : 's'} pending` : accessStatus}
-        </span>}
-        {availability.kind === 'reconnecting' && <span className="kb-offline">{availability.message}</span>}
-        {syncNote && <span className="kb-offline">{syncNote}</span>}
+        <span className="kb-status-live" role="status" aria-live="polite">
+          {(queuedCount > 0 || accessStatus) && <span className="kb-offline">
+            {queuedCount > 0 ? `${queuedCount} change${queuedCount === 1 ? '' : 's'} pending` : accessStatus}
+          </span>}
+          {availability.kind === 'reconnecting' && <span className="kb-offline">{availability.message}</span>}
+          {syncNote && <span className="kb-offline">{syncNote}</span>}
+        </span>
         {share && <BoardPresence members={displayMembers} onOpen={() => setShareOpen(true)} />}
         <button
           className={`kb-iconbtn${hasFilters ? ' kb-filter-active' : ''}`}
@@ -2065,18 +2069,20 @@ export default function Board({
                 })}
               </div>
             </div>}
-            {access.canWrite && <div className="kb-card-danger-zone kb-mobile-only">
-              <button className="kb-btn kb-btn-danger kb-delete-card" onClick={() => deleteCard(openCard_.id)}>
-                <Trash aria-hidden="true" />
-                Delete card
-              </button>
-            </div>}
-
-            {access.canWrite && <div className="kb-card-actions kb-desktop-only">
-              <button className="kb-btn kb-btn-quiet kb-danger" onClick={() => deleteCard(openCard_.id)}>
-                Delete card
-              </button>
-            </div>}
+            {access.canWrite && (confirmDeleteCard
+              ? <div className="kb-col-confirm kb-card-delete-confirm" role="alertdialog" aria-label="Delete card">
+                <div className="kb-col-confirm-copy">Delete this card{share ? ' for everyone on this board' : ''}? This can’t be undone.</div>
+                <div className="kb-col-confirm-actions">
+                  <button className="kb-btn kb-btn-quiet" autoFocus onClick={() => setConfirmDeleteCard(false)}>Cancel</button>
+                  <button className="kb-btn kb-btn-danger" onClick={() => deleteCard(openCard_.id)}>Delete</button>
+                </div>
+              </div>
+              : <div className="kb-card-danger-zone">
+                <button className="kb-btn kb-delete-card" onClick={() => setConfirmDeleteCard(true)}>
+                  <Trash aria-hidden="true" />
+                  Delete card
+                </button>
+              </div>)}
             </>}
           </div>
         </>

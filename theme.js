@@ -904,9 +904,8 @@ export const CSS = `
   .kb-attach-drop-copy { min-width: 0; display: grid; gap: 2px; }
   .kb-attach-drop-copy > strong { font-size: 13.5px; font-weight: 650; }
   .kb-attach-drop-copy > small { color: var(--muted); font-size: 12px; }
-  .kb-card-actions { display: flex; }
   @media (prefers-reduced-motion: reduce) { .kb-attach-drop { transition: none; } }
-  .kb-card-toolbar-title { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
+  .kb-card-toolbar-title { flex: 1 1 auto; min-width: 0; font-size: 19px; font-weight: 650; line-height: 1.2; letter-spacing: -0.015em; }
   .kb-card-toolbar-done {
     min-height: 44px;
     padding: 0 15px;
@@ -1418,4 +1417,68 @@ export const CSS = `
     .kb-board-skeleton-add { animation: none; }
     .kb-card, .kb-tile, .kb-col-actions, .kb-root button { transition: none; }
   }
+
+  /* Board refresh: quieter lanes, clearer cards, safer destructive actions. */
+
+  /* Columns recede into lanes; cards carry the edge and the lift. */
+  .kb-col { background: color-mix(in srgb, var(--surface-2) 32%, var(--bg)); border-radius: 16px; }
+  .kb-col-name { font-size: 15px; font-weight: 650; letter-spacing: -0.015em; }
+  .kb-card {
+    background: var(--surface);
+    border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  }
+  @media (hover: hover) and (prefers-reduced-motion: no-preference) {
+    .kb-card:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--text) 18%, transparent); box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.45); }
+  }
+  .kb-card-title { font-size: 14.5px; line-height: 1.35; }
+  .kb-addcard { color: var(--muted); border-radius: 12px; }
+
+  /* Linked pull requests: compact rows that keep 44px touch targets. */
+  .kb-pr-reference { gap: 8px; padding-block: 10px; }
+  .kb-pr-list { gap: 4px; }
+  .kb-pr-item { padding: 0 2px 0 12px; }
+  .kb-pr-edit { padding-inline: 8px; }
+
+  /* Filled buttons keep white labels at AA contrast on the platform accent. */
+  .kb-btn-primary, .kb-card-toolbar-done { background: color-mix(in srgb, var(--accent) 78%, #000); color: #fff; }
+  .kb-btn-danger { background: color-mix(in srgb, var(--danger) 78%, #000); color: #fff; }
+  @media (hover: hover) {
+    .kb-btn-primary:hover, .kb-card-toolbar-done:hover, .kb-btn-danger:hover { filter: brightness(0.92); }
+  }
+
+  /* Card sheet. */
+  .kb-notes-display.kb-notes-empty { min-height: 44px; display: flex; align-items: center; color: var(--muted); }
+  .kb-delete-card {
+    width: auto;
+    min-height: 44px;
+    padding-inline: 14px;
+    border: 1px solid color-mix(in srgb, var(--kb-danger) 35%, transparent);
+    background: transparent;
+    color: var(--kb-danger);
+  }
+  .kb-card-danger-zone { display: flex; }
+  .kb-card-delete-confirm { margin: 0; }
+  .kb-status-live { display: contents; }
+
+  /* Desktop: sharing opens as a centred dialog, not a phone sheet. */
+  @media (min-width: 641px) {
+    .kb-sheet:not(.kb-card-sheet):not(.kb-switcher-panel) {
+      top: 50%;
+      bottom: auto;
+      transform: translate(-50%, -50%);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      max-height: min(84dvh, 720px);
+      padding-bottom: 20px;
+      box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.55);
+    }
+    .kb-sheet:not(.kb-card-sheet):not(.kb-switcher-panel) > .kb-sheet-grab { display: none; }
+  }
+  @media (max-width: 640px) {
+    .kb-col-name { font-size: 16px; }
+    .kb-delete-card { width: 100%; }
+  }
+
 `
