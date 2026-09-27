@@ -877,7 +877,9 @@ export const CSS = `
     background: var(--surface);
     box-shadow: 0 12px 32px rgba(0,0,0,0.22);
   }
-  .kb-label-menu .kb-swatches { flex-wrap: nowrap; }
+  .kb-label-menu { max-width: calc(100vw - 32px); }
+  .kb-label-menu .kb-swatches { flex-wrap: nowrap; overflow-x: auto; }
+  .kb-label-menu .kb-swatch { flex: 0 0 44px; width: 44px; height: 44px; }
   .kb-attach-drop {
     width: 100%;
     min-height: 56px;
@@ -940,12 +942,7 @@ export const CSS = `
     text-align: right;
   }
   .kb-property-value { min-width: 0; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13.5px; text-transform: capitalize; }
-  .kb-property-value > svg { width: 16px; height: 16px; transition: transform 150ms ease-out; }
   .kb-property-dot { width: 12px; height: 12px; flex: 0 0 auto; border-radius: 999px; }
-  .kb-property-details > summary { cursor: pointer; list-style: none; }
-  .kb-property-details > summary::-webkit-details-marker { display: none; }
-  .kb-property-details[open] .kb-property-value > svg { transform: rotate(180deg); }
-  .kb-property-options { padding: 8px 0 12px; }
   .kb-status-block { min-width: 0; }
   .kb-status-block > h3 { margin-bottom: 7px; }
   .kb-status-seg {

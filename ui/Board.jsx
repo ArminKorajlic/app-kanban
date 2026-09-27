@@ -323,6 +323,8 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = f
     setOpen(true)
   }
 
+  // A viewer has nothing to choose, so an empty icon would only look actionable.
+  if (iconOnly && !canWrite && !selectedLabel) return null
   return (
     <div className="kb-assignee-picker" ref={rootRef}>
       <button
@@ -1334,7 +1336,9 @@ export default function Board({
   const attachFiles = async filesInput => {
     const files = [...(filesInput || [])]
     const cardId = openCardId
-    if (!cardId || files.length === 0 || attachmentBusy) return
+    // An untitled draft has no card to attach to yet; saving the file first
+    // would leave an orphaned upload.
+    if (!cardId || !boardRef.current?.cards[cardId] || files.length === 0 || attachmentBusy) return
     const existing = boardRef.current?.cards[cardId]?.attachments || []
     if (existing.length + files.length > MAX_CARD_ATTACHMENTS) {
       setAttachmentError(`A card can hold up to ${MAX_CARD_ATTACHMENTS} attachments.`)
@@ -1971,7 +1975,7 @@ export default function Board({
                   disabled={attachmentBusy || (openCard_.attachments?.length || 0) >= MAX_CARD_ATTACHMENTS}
                   onClick={() => fileInputRef.current?.click()}
                   onDragOver={event => { if (event.dataTransfer?.types?.includes('Files')) { event.preventDefault(); setAttachmentDropActive(true) } }}
-                  onDragLeave={() => setAttachmentDropActive(false)}
+                  onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget)) setAttachmentDropActive(false) }}
                   onDrop={event => { event.preventDefault(); setAttachmentDropActive(false); attachFiles(event.dataTransfer?.files) }}
                 >
                   <span className="kb-attach-drop-icon"><Paperclip aria-hidden="true" /></span>
