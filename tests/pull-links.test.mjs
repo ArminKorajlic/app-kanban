@@ -43,3 +43,14 @@ test('PR link edits rebase on concurrent links without overwriting them', () => 
   applyBoardOp(doc, { type: 'edit-pull-request', cardId: 'card', previousUrl: 'https://github.com/acme/app/pull/2', nextUrl: '' })
   assert.deepEqual(doc.cards.card.pullRequestUrls, [5, 3, 4].map(number => `https://github.com/acme/app/pull/${number}`))
 })
+
+test('completing a card with a pull request also links it once; other links stay in notes only', () => {
+  const doc = board()
+  applyBoardOp(doc, { type: 'complete-card', cardId: 'card', summary: 'Shipped', link: 'https://github.com/acme/app/pull/9' })
+  applyBoardOp(doc, { type: 'complete-card', cardId: 'card', summary: 'Shipped', link: 'https://github.com/acme/app/pull/9' })
+  assert.deepEqual(doc.cards.card.pullRequestUrls.filter(url => url.endsWith('/pull/9')), ['https://github.com/acme/app/pull/9'])
+  const before = [...doc.cards.card.pullRequestUrls]
+  applyBoardOp(doc, { type: 'complete-card', cardId: 'card', summary: 'Booked', link: 'https://example.com/receipt' })
+  assert.deepEqual(doc.cards.card.pullRequestUrls, before)
+  assert.match(doc.cards.card.notes, /^Link: https:\/\/example\.com\/receipt$/mu)
+})

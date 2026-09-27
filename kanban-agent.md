@@ -30,7 +30,9 @@ Commands and stdin shapes:
 
 - `add-card BOARD_ID`: `{"columnId":"...","title":"...","notes":"...","id":"optional-stable-id"}`
 - `update-card BOARD_ID`: `{"cardId":"...","patch":{"title":"...","notes":"..."}}`
-  Other editable fields: label, due, assignee, assigneeHost.
+  Other editable fields: label, due, assignee, assigneeHost, and
+  `pullRequestUrls` (the card's full list of linked GitHub pull request URLs;
+  read the card first and send the whole list, since it replaces the old one).
 - `move-card BOARD_ID`: `{"cardId":"...","toColumnId":"...","beforeCardId":null}`
 
 ## Marking a finished task done
@@ -43,7 +45,8 @@ When you finish a task whose exact title matches one Kanban card, use
 `link` is optional: use it for whatever shows the result, such as a pull
 request, shared document, booking, or receipt. The command appends
 `✅ Done — <summary>` and the link to that card's notes, then moves it to the
-column named **Done** when that column exists. It refuses to guess when zero or
+column named **Done** when that column exists. A GitHub pull request link is
+also added to the card's linked pull requests, so its live status shows there. It refuses to guess when zero or
 multiple card titles match, and it does not duplicate a completion already on
 the card. An unavailable recorded board or a title changed before the fresh
 write also blocks automatic completion. A missing card or ambiguous title is a
@@ -52,10 +55,16 @@ visible blocker, not permission to update a different card.
 ### If GitHub is connected
 
 To link the owner's open pull requests to their cards, run `sync-open-prs`. It
-considers **only cards assigned to the current owner**, then safely skips a
-pull request without a unique title-based match. Use `sync-open-prs --dry-run`
-to inspect the proposed matches without changing cards. Without a GitHub
-connection the command reports that and changes nothing.
+considers **only cards assigned to the current owner**, skips a pull request
+already linked to any card, and skips one without a unique title-based match.
+Use `sync-open-prs --dry-run` to inspect the proposed matches without changing
+cards. When you can see which card a skipped PR belongs to, link it explicitly
+with `update-card` instead. Without a GitHub connection the command reports
+that and changes nothing.
+
+Cards show each linked PR's status using the owner's own GitHub connection.
+Without one, or for a PR that connection can't see, the card says so in a
+neutral note; the link itself always works.
 
 ## Retries and limits
 

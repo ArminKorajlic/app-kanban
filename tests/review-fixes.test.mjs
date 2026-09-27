@@ -259,10 +259,19 @@ test('component-level viewer and keyboard contract gates writes, reorders, and m
   assert.match(boardSource, /<h3>Position<\/h3>/)
   assert.match(boardSource, /Move up/)
   assert.match(boardSource, /Move down/)
-  assert.ok(
-    boardSource.indexOf('<h3>Checklist</h3>') < boardSource.indexOf('className="kb-property-list kb-mobile-only"'),
-    'the phone checklist stays between notes and card properties',
-  )
+  const sheetSource = boardSource.slice(boardSource.indexOf('className="kb-card-toolbar"'))
+  const inOrder = markers => markers.every((marker, index) => {
+    const at = sheetSource.indexOf(marker)
+    return at >= 0 && (index === 0 || sheetSource.indexOf(markers[index - 1]) < at)
+  })
+  assert.match(sheetSource, /<span className="kb-card-toolbar-title">New card<\/span>/,
+    'every opened card shows the New card heading')
+  assert.ok(inOrder(['<LabelPicker', '<AssigneePicker', 'kb-card-toolbar-done']),
+    'the card header reads label, assignee, then Done')
+  assert.ok(inOrder(['<CardNotesEditor', '<ChecklistEditor', 'className="kb-attach-drop', 'aria-label="Card due date"', '<PullRequestReferences']),
+    'card sections read notes, checklist, attachments, due date, then linked pull requests')
+  assert.equal(sheetSource.match(/<AssigneePicker/g).length, 1, 'one assignee control for every screen size')
+  assert.equal(sheetSource.match(/aria-label="Card due date"/g).length, 1, 'one due-date control for every screen size')
   assert.match(boardSource, /className="kb-card-danger-zone kb-mobile-only"/)
   assert.match(boardSource, /<button type="button" className="kb-title-display kb-editable-field"[^\n]*aria-label="Edit card title"/)
   assert.match(boardSource, /<LinkifiedText text=\{card\.notes\} \/>/)
@@ -288,7 +297,7 @@ test('component-level viewer and keyboard contract gates writes, reorders, and m
   assert.match(boardSource, /<BoardPresence members=\{displayMembers\}/)
   assert.match(boardSource, /await onRefreshMembers\?\.\(\)/)
   assert.match(boardSource, /kb-card-notes/)
-  assert.match(boardSource, /Attach files/)
+  assert.match(boardSource, /Add attachment/)
   assert.match(boardSource, /onPaste=\{attachFromPaste\}/)
   assert.match(boardSource, /consumeAttachmentPaste/)
   assert.match(boardSource, /MAX_CARD_ATTACHMENTS/)
@@ -318,7 +327,7 @@ test('card-title links open directly and pull-request status stays informational
   const storageSource = await readFile(new URL('../storage.js', import.meta.url), 'utf8')
   assert.match(boardSource, /className="kb-card-title"><LinkifiedText text=\{card\.title\}/)
   assert.match(boardSource, /if \(!e\.target\.closest\('a'\)\) onDragStart/)
-  assert.match(boardSource, /function pullStatus\(pull\)/)
+  assert.match(boardSource, /pullRequestStatus\(response\.status/)
   assert.match(boardSource, /kb-pr-status/)
   assert.match(boardSource, /setPullStatusRefresh/)
   assert.match(boardSource, /function PullRequestReferences/)

@@ -1,20 +1,42 @@
-const IGNORED_WORDS = new Set(['a', 'an', 'and', 'as', 'at', 'be', 'by', 'for', 'from', 'in', 'is', 'of', 'on', 'or', 'the', 'this', 'that', 'to', 'use', 'using', 'with'])
-const TITLE_ALIASES = {
-  handles: ['handle', 'name'], handle: ['name'], verified: ['name'], collaborators: ['collaborator', 'user'], collaborator: ['user'], users: ['user'], assignee: ['assign'], assign: ['assignee'], attachments: ['attachment'], previews: ['preview'], entries: ['entry'],
-  model: ['models'], models: ['model'],
-  goal: ['goals'], goals: ['goal'], polish: ['fix', 'improve'],
-  robustness: ['robust', 'reliability'], robust: ['robustness'],
-  error: ['errors', 'recover', 'busy', 'capacity'], errors: ['error', 'recover', 'busy', 'capacity'],
-  recover: ['recovery', 'retry'], recovery: ['recover', 'retry'],
-  busy: ['capacity'], capacity: ['busy'],
-  backoff: ['delayed', 'retry'], delayed: ['backoff', 'retry'], retry: ['backoff', 'recover'],
-  graciously: ['recover'],
+// GitHub pull request links: recognizing a PR URL, describing its live status,
+// and matching the owner's open PRs to cards for `sync-open-prs`.
+
+const PULL_PATH = /^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/u
+
+export function parsePullRequestUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim())
+    const match = url.hostname === 'github.com' && url.pathname.match(PULL_PATH)
+    return match ? { owner: match[1], repo: match[2], number: Number(match[3]) } : null
+  } catch { return null }
 }
+
+// Status is informational and read with the owner's own GitHub connection, so
+// it must degrade honestly: only a successful read describes the PR. Every other
+// answer explains why this Möbius cannot see it in a neutral tone, so a missing
+// connection or a private repository never looks like a closed pull request.
+export function pullRequestStatus(httpStatus, pull) {
+  if (httpStatus === 200) {
+    if (pull?.merged_at) return { label: 'Merged', tone: 'merged' }
+    if (pull?.draft) return { label: 'Draft', tone: 'draft' }
+    if (pull?.state === 'open') return { label: 'Open', tone: 'open' }
+    if (pull?.state === 'closed') return { label: 'Closed', tone: 'closed' }
+  }
+  if (httpStatus === 401) return { label: 'Connect GitHub', tone: 'unknown', hint: 'Connect GitHub in Möbius Settings to see pull request status.' }
+  if (httpStatus === 404) return { label: 'Not visible', tone: 'unknown', hint: 'Your GitHub connection can’t see this pull request. It may be private or deleted.' }
+  return { label: 'Unavailable', tone: 'unknown', hint: 'GitHub status couldn’t be loaded. Try refreshing later.' }
+}
+
+const IGNORED_WORDS = new Set(['a', 'an', 'and', 'as', 'at', 'be', 'by', 'for', 'from', 'in', 'is', 'of', 'on', 'or', 'the', 'this', 'that', 'to', 'use', 'using', 'with'])
 const REPOSITORY_TITLE_SIMILARITY_MINIMUM = 0.2
 const TITLE_SIMILARITY_MINIMUM = 0.3
 
+// Plurals are the only word variation matched automatically. Anything looser
+// belongs to the agent's judgment: it can link a PR explicitly with
+// `update-card` or `complete-matching-card`.
+const singular = word => (word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word)
 const titleWords = value => new Set((String(value || '').toLocaleLowerCase().match(/[a-z0-9]+/g) || [])
-  .filter(word => !IGNORED_WORDS.has(word)).flatMap(word => [word, ...(TITLE_ALIASES[word] || [])]))
+  .filter(word => !IGNORED_WORDS.has(word)).map(singular))
 
 const prTitleSimilarity = (left, right) => {
   const a = titleWords(left)

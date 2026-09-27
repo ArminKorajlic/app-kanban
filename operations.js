@@ -1,6 +1,7 @@
 // Serializable, idempotent board operations. Keeping the user's intent as data
 // lets local-offline edits survive a reload and be replayed against a fresh CAS
 // base instead of trusting the runtime's blind offline write queue.
+import { parsePullRequestUrl } from './prMatching.js'
 
 function insertBefore(ids, itemId, beforeId) {
   const next = (Array.isArray(ids) ? ids : []).filter(id => id !== itemId)
@@ -12,12 +13,7 @@ function insertBefore(ids, itemId, beforeId) {
 // A completion note is `✅ Done — <summary>` plus an optional link line. GitHub
 // pull requests keep the historical `PR:` label; any other link uses `Link:`.
 function completionLinkLine(link) {
-  let pull = false
-  try {
-    const url = new URL(link)
-    pull = url.hostname === 'github.com' && /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/u.test(url.pathname)
-  } catch {}
-  return `${pull ? 'PR' : 'Link'}: ${link}`
+  return `${parsePullRequestUrl(link) ? 'PR' : 'Link'}: ${link}`
 }
 
 export function hasCardCompletion(notes, link, summary = '') {
@@ -122,6 +118,12 @@ export function applyBoardOp(board, op) {
       if (!hasCardCompletion(card.notes, link, op.summary)) {
         const completion = [`✅ Done — ${op.summary}`, ...(link ? [completionLinkLine(link)] : [])].join('\n')
         card.notes = [String(card.notes || '').trim(), completion].filter(Boolean).join('\n\n')
+      }
+      // A finished pull request is also a linked pull request, so the card
+      // shows its live status like any PR added by hand.
+      if (parsePullRequestUrl(link)) {
+        card.pullRequestUrls = cardPullUrls({ pullRequestUrls: [...cardPullUrls(card), link] })
+        card.pullRequestUrl = card.pullRequestUrls[0]
       }
       const done = board.columns.find(column => String(column.name || '').trim().toLocaleLowerCase() === 'done')
       if (done && !done.cardIds.includes(op.cardId)) {
