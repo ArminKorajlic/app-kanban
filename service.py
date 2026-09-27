@@ -4,31 +4,61 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from urllib.parse import quote
 import httpx
 from collaboration.service import Service, Failure
 
+OWNER_LABEL_TTL_S = 300
+
+
+async def owner_label():
+    """The owner's profile label, remembered for OWNER_LABEL_TTL_S.
+
+    Every board read and write records it, so asking the identity service on
+    each request added a platform round trip to every poll. A renamed profile
+    shows within the TTL, and while the identity service is unreachable the
+    last known label is kept; collaboration falls back to the deployment host
+    only when no label was ever resolved.
+    """
+    path = Path(os.environ['APP_STORAGE_DIR']) / 'server' / 'owner-label.json'
+    try:
+        saved = json.loads(path.read_text())
+    except (OSError, ValueError):
+        saved = {}
+    label = saved.get('label') if isinstance(saved.get('label'), str) else ''
+    checked_at = saved.get('checked_at')
+    if isinstance(checked_at, (int, float)) and time.time() - checked_at < OWNER_LABEL_TTL_S:
+        return label
+    try:
+        # The app token has the reviewed identity capability.
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as client:
+            response = await client.get(
+                os.environ['API_BASE_URL'].rstrip('/') + '/api/identity',
+                headers={'Authorization': 'Bearer ' + os.environ['APP_TOKEN']},
+            )
+        if response.status_code != 200:
+            return label
+        profile = response.json().get('profile') or {}
+    except Exception:
+        return label
+    handle = str(profile.get('handle') or '').strip().lstrip('@')
+    display_name = str(profile.get('display_name') or '').strip()
+    label = ('@' + handle) if handle else display_name
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staged = path.with_name(f'.{path.name}.{os.getpid()}')
+        staged.write_text(json.dumps({'label': label, 'checked_at': time.time()}))
+        staged.replace(path)
+    except OSError:
+        pass
+    return label
+
+
 async def dispatch(request):
-    owner_name = ''
-    # The app token has the reviewed identity capability. Resolve the stable
-    # profile label once per service request; collaboration still falls back to
-    # the deployment host if the identity service is temporarily unavailable.
     path = str(request.get('path', '')).strip('/')
-    if not path.startswith('peer/'):
-        try:
-            async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as client:
-                response = await client.get(
-                    os.environ['API_BASE_URL'].rstrip('/') + '/api/identity',
-                    headers={'Authorization': 'Bearer ' + os.environ['APP_TOKEN']},
-                )
-            if response.status_code == 200:
-                profile = response.json().get('profile') or {}
-                handle = str(profile.get('handle') or '').strip().lstrip('@')
-                display_name = str(profile.get('display_name') or '').strip()
-                owner_name = ('@' + handle) if handle else display_name
-        except Exception:
-            pass
+    owner_name = '' if path.startswith('peer/') else await owner_label()
 
     async def resolve(handle):
         async with httpx.AsyncClient(timeout=5,follow_redirects=False,trust_env=False) as client:
@@ -40,6 +70,11 @@ async def dispatch(request):
     service=Service(Path(os.environ['APP_STORAGE_DIR'])/'server',host=os.environ['INSTANCE_DOMAIN'],app_id=int(os.environ['APP_ID']),resolve=resolve,owner_name=owner_name)
     try: return await service.handle(request)
     finally: service.close()
+
+# Möbius may run everything above once and fork each request from it,
+# removing interpreter start-up and imports from every request. Module setup
+# therefore reads only per-installation values and starts no threads.
+MOBIUS_PRELOAD = True
 
 if __name__=='__main__':
     try:
