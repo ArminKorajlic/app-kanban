@@ -4,7 +4,7 @@ import { createBoardRepository } from '../boardRepository.js'
 import { configureSync, recoverMemberships } from '../sync.js'
 import { uid } from '../storage.js'
 import { isIsoDate } from '../domain.js'
-import { hasCardCompletion } from '../operations.js'
+import { cardPullUrls, hasCardCompletion } from '../operations.js'
 import { pullMatchesCard } from '../prMatching.js'
 
 const base = process.env.API_BASE_URL
@@ -134,7 +134,8 @@ async function completeMatchingCard(data) {
 }
 async function syncOpenPrs(dryRun) {
   const userResponse = await request('/api/github/api/user')
-  if (!userResponse.ok) throw new Error('GitHub identity unavailable; connect GitHub in Settings first.')
+  if (userResponse.status === 401) throw new Error('GitHub is not connected; connect it in Möbius Settings first. No cards were changed.')
+  if (!userResponse.ok) throw new Error(`GitHub identity unavailable (HTTP ${userResponse.status}); no cards were changed.`)
   const user = await userResponse.json()
   const ownerLogin = user.login
   const searchResponse = await request(
@@ -148,10 +149,14 @@ async function syncOpenPrs(dryRun) {
   if (unavailable.length) {
     throw new Error(`Cannot safely sync while ${unavailable.length} recorded board${unavailable.length === 1 ? ' is' : 's are'} unavailable; retry when every board can be checked.`)
   }
+  // A PR already linked to any card was placed deliberately (by hand, by an
+  // agent, or by an earlier sync); never guess a second home for it.
+  const linkedUrls = new Set()
   const candidateCards = []
   for (const board of boards) {
     const state = await repository.read(board.id)
     for (const card of Object.values(state.doc.cards)) {
+      cardPullUrls(card).forEach(url => linkedUrls.add(url))
       const assignee = normalizedAssignee(card.assignee)
       if ((assignee === null && state.authority === 'private') || assignee === ownerLogin.toLocaleLowerCase()) {
         candidateCards.push({ board, card })
@@ -161,6 +166,10 @@ async function syncOpenPrs(dryRun) {
   const matched = []
   const skipped = []
   for (const pull of pulls) {
+    if (linkedUrls.has(pull.html_url)) {
+      skipped.push({ pr: pull.html_url, title: pull.title, reason: 'already linked' })
+      continue
+    }
     const matches = candidateCards
       .filter(({ card }) => pullMatchesCard(pull, card))
     if (matches.length !== 1) {

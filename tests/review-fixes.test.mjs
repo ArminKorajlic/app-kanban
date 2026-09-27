@@ -318,7 +318,7 @@ test('card-title links open directly and pull-request status stays informational
   const storageSource = await readFile(new URL('../storage.js', import.meta.url), 'utf8')
   assert.match(boardSource, /className="kb-card-title"><LinkifiedText text=\{card\.title\}/)
   assert.match(boardSource, /if \(!e\.target\.closest\('a'\)\) onDragStart/)
-  assert.match(boardSource, /function pullStatus\(pull\)/)
+  assert.match(boardSource, /pullRequestStatus\(response\.status/)
   assert.match(boardSource, /kb-pr-status/)
   assert.match(boardSource, /setPullStatusRefresh/)
   assert.match(boardSource, /function PullRequestReferences/)

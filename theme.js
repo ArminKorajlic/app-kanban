@@ -776,7 +776,7 @@ export const CSS = `
   .kb-pr-edit { min-height: 44px; border: 0; padding: 6px; color: var(--muted); background: transparent; font: 600 12px/1 var(--font); cursor: pointer; }
   .kb-pr-edit:hover { color: var(--text); }
   .kb-pr-remove, .kb-pr-refresh { flex: 0 0 44px; width: 44px; height: 44px; min-height: 44px; padding: 0; font-size: 18px; line-height: 1; }
-  .kb-pr-remove > svg { width: 15px; height: 15px; }
+  .kb-pr-remove > svg, .kb-pr-refresh > svg { width: 15px; height: 15px; }
   .kb-pr-editor { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
   .kb-pr-editor .kb-input { min-width: 0; flex: 1 1 auto; font-size: 16px; }
   .kb-pr-editor .kb-btn { min-height: 44px; padding-inline: 11px; }
@@ -786,9 +786,11 @@ export const CSS = `
   .kb-pr-add > svg { width: 15px; height: 15px; }
   .kb-pr-status { flex: 0 0 auto; padding: 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 650; }
   .kb-pr-status-open { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
-  .kb-pr-status-draft, .kb-pr-status-checking { background: var(--surface-2); color: var(--muted); }
+  .kb-pr-status-draft { background: var(--surface-2); color: var(--muted); }
+  .kb-pr-status-unknown { border: 1px dashed var(--border); color: var(--muted); }
   .kb-pr-status-merged { background: color-mix(in srgb, #38b875 18%, transparent); color: #319867; }
-  .kb-pr-status-closed, .kb-pr-status-unavailable { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+  .kb-pr-status-closed { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+  .kb-pr-hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
   .kb-card-sheet {
     top: clamp(56px, 9dvh, 104px);
     bottom: auto;

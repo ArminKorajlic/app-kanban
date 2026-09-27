@@ -99,14 +99,18 @@ test('CLI writes private and shared boards through their authority using JSON an
     assert.deepEqual(local.cards.stable.pullRequestUrls, [1, 2].map(number =>
       `https://github.com/mobius-os/app-kanban/pull/${number}`))
     assert.equal(local.cards.stable.pullRequestUrl, local.cards.stable.pullRequestUrls[0])
-    await run('sync-open-prs')
+    const retried = await run('sync-open-prs')
     assert.equal(local.cards.stable.pullRequestUrls.length, 2, 'retry does not duplicate links')
+    assert.deepEqual(retried.skipped.map(item => item.reason), ['already linked', 'already linked'],
+      'a PR already linked to a card is never matched again')
 
     local.cards.stable.checklist = [{ id: 'check-1', text: 'Review', done: false }]
     await run('set-checklist-item', { cardId: 'stable', itemId: 'check-1', done: true })
     assert.equal(local.cards.stable.checklist[0].done, true)
     await assert.rejects(run('set-checklist-item', { cardId: 'stable', itemId: 'stale', done: true }), /Checklist item was not found/)
 
+    local.cards.stable.pullRequestUrls = []
+    local.cards.stable.pullRequestUrl = ''
     local.cards.stable.assignee = ''
     assert.equal((await run('sync-open-prs', undefined, '--dry-run')).matched.length, 0,
       'unassigned cards are not claimed')
@@ -126,6 +130,8 @@ test('CLI writes private and shared boards through their authority using JSON an
     assert.deepEqual(local.columns[1].cardIds, ['stable'])
     assert.equal(local.cards.stable.notes.match(/pull\/19/g).length, 1)
     assert.match(local.cards.stable.notes, /^PR: https:\/\/github\.com\/mobius-os\/app-kanban\/pull\/19$/mu)
+    assert.deepEqual(local.cards.stable.pullRequestUrls, ['https://github.com/mobius-os/app-kanban/pull/19'],
+      'a completion PR also appears in the card’s linked pull requests, once')
     const { link, ...legacyCompletion } = completion
     assert.equal((await run('complete-matching-card', { ...legacyCompletion, prUrl: link })).status, 'already-saved',
       'the original prUrl input name is still accepted')

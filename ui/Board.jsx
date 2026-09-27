@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, ChevronLeft, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, Share, Trash, User } from '@openai/apps-sdk-ui/components/Icon'
+import { Check, ChevronDown, ChevronLeft, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, Reload, Share, Trash, User } from '@openai/apps-sdk-ui/components/Icon'
 import { uid, subscribeBoard, getBoard, boardPath, normalizeBoard } from '../storage.js'
 import { resolveMemberHandles, pullShared, createInvite, inviteByHandle, getMembers, revokeCollaborator, groupCollaborators, collaboratorForHost, selfCollaborator, inviteDeliveryNotice, shareBoard, cacheSubscriptionIsAuthoritative, rememberSharedState, sharedBoardPollDelay, acceptSharedPoll, createSharedRefreshLifecycle } from '../sync.js'
 import { applyBoardOp, cardMoveAnchor, columnMoveAnchor, cardPullUrls } from '../operations.js'
+import { parsePullRequestUrl, pullRequestStatus } from '../prMatching.js'
 import { acknowledgeRecoveredBoardOps, applyPendingBoardOps, enqueuePendingBoardOp, readPendingBoardOps, readRecoveredBoardOps, exportUnsyncedBoardOps, replayPendingBoardOps, hasRecoverableBoardOps } from '../pendingOps.js'
 import { createBoardRepository, isRetryableBoardError, replayOutcomeForBoardError } from '../boardRepository.js'
 import {
@@ -437,38 +438,24 @@ function LinkifiedText({ text }) {
   })
 }
 
-function githubPullPath(value) {
-  try {
-    const url = new URL(String(value || ''))
-    const match = url.hostname === 'github.com' && url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/u)
-    return match ? `repos/${match[1]}/${match[2]}/pulls/${match[3]}` : ''
-  } catch { return '' }
-}
-
-function pullStatus(pull) {
-  if (pull?.merged_at) return { label: 'Merged', tone: 'merged' }
-  if (pull?.draft) return { label: 'Draft', tone: 'draft' }
-  if (pull?.state === 'open') return { label: 'Open', tone: 'open' }
-  if (pull?.state === 'closed') return { label: 'Closed', tone: 'closed' }
-  return { label: 'Unavailable', tone: 'unavailable' }
-}
-
 function pullRequestLabel(url) {
-  try {
-    const parsed = new URL(url)
-    const match = parsed.hostname === 'github.com' && parsed.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/u)
-    return match ? `${match[1]}/${match[2]} #${match[3]}` : parsed.hostname
-  } catch { return 'Pull request' }
+  const pull = parsePullRequestUrl(url)
+  if (pull) return `${pull.owner}/${pull.repo} #${pull.number}`
+  try { return new URL(url).hostname } catch { return 'Link' }
 }
 
-function PullRequestReferences({ card, canWrite, statuses, onUpdate, onRefresh }) {
+// Statuses are keyed by URL. Offline, or for a link that is not a GitHub PR,
+// there is nothing to check, so no status pill is shown.
+function PullRequestReferences({ card, canWrite, online, statuses, onUpdate, onRefresh }) {
   const urls = cardPullUrls(card)
+  const statusFor = url => (parsePullRequestUrl(url) ? statuses[url] || (online ? { label: 'Checking…', tone: 'unknown' } : null) : null)
+  const hints = [...new Set(urls.map(url => statusFor(url)?.hint).filter(Boolean))]
   const [editor, setEditor] = useState(null)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState('')
   useEffect(() => { setEditor(null); setDraft(''); setError('') }, [card.id])
   const save = () => {
-    if (!githubPullPath(draft.trim())) { setError('Use a GitHub pull request URL.'); return }
+    if (!parsePullRequestUrl(draft)) { setError('Use a GitHub pull request URL.'); return }
     onUpdate(editor === 'add' ? null : editor, draft.trim())
     setEditor(null); setDraft(''); setError('')
   }
@@ -476,14 +463,11 @@ function PullRequestReferences({ card, canWrite, statuses, onUpdate, onRefresh }
   return <section className="kb-pr-reference" aria-labelledby="kb-pr-reference-title">
     <div className="kb-section-heading">
       <h3 id="kb-pr-reference-title">Linked pull requests</h3>
-      {urls.length > 0 && <button type="button" className="kb-iconbtn kb-pr-refresh" aria-label="Refresh pull request statuses" title="Refresh statuses" onClick={onRefresh}>↻</button>}
+      {online && urls.some(parsePullRequestUrl) && <button type="button" className="kb-iconbtn kb-pr-refresh" aria-label="Refresh pull request statuses" title="Refresh statuses" onClick={onRefresh}><Reload /></button>}
     </div>
     {urls.length > 0 && <div className="kb-pr-list">
       {urls.map(url => {
-        const path = githubPullPath(url)
-        const status = path
-          ? statuses[`${card.id}:${path}`] || { label: 'Checking…', tone: 'checking' }
-          : { label: 'Unavailable', tone: 'unavailable' }
+        const status = statusFor(url)
         const isEditing = editor === url
         return <div className="kb-pr-item" key={`${card.id}-${url}`}>
           {isEditing ? <form className="kb-pr-editor" onSubmit={event => { event.preventDefault(); save() }}>
@@ -492,7 +476,7 @@ function PullRequestReferences({ card, canWrite, statuses, onUpdate, onRefresh }
             <button type="button" className="kb-btn kb-pr-cancel" onClick={() => { setEditor(null); setDraft('') }}>Cancel</button>
           </form> : <>
             <a className="kb-pr-link" href={url} target="_blank" rel="noreferrer">{pullRequestLabel(url)}</a>
-            <span className={`kb-pr-status kb-pr-status-${status.tone}`}>{status.label}</span>
+            {status && <span className={`kb-pr-status kb-pr-status-${status.tone}`}>{status.label}</span>}
             {canWrite && <span className="kb-pr-actions"><button type="button" className="kb-pr-edit" onClick={() => { setEditor(url); setDraft(url) }}>Edit</button><button type="button" className="kb-iconbtn kb-pr-remove" aria-label={`Remove ${pullRequestLabel(url)}`} title="Remove pull request" onClick={() => remove(url)}><Trash /></button></span>}
           </>}
         </div>
@@ -503,6 +487,7 @@ function PullRequestReferences({ card, canWrite, statuses, onUpdate, onRefresh }
       <button type="submit" className="kb-btn">Add</button>
       <button type="button" className="kb-btn kb-pr-cancel" onClick={() => { setEditor(null); setDraft('') }}>Cancel</button>
     </form> : <button type="button" className="kb-btn kb-pr-add" onClick={() => { setEditor('add'); setDraft('') }}><Plus /> Add pull request</button>)}
+    {hints.map(hint => <p className="kb-pr-hint" key={hint}>{hint}</p>)}
     {error && <p className="kb-attachment-error" role="alert">{error}</p>}
   </section>
 }
@@ -1561,23 +1546,20 @@ export default function Board({
   const accessStatus = availability.kind === 'terminal' ? '' : access.status
   const hasFilters = !!filterText.trim() || filterLabels.length > 0
   const linkedCard = board?.cards?.[openCardId]
-  const linkedPulls = linkedCard ? cardPullUrls(linkedCard).map(url => ({ id: linkedCard.id, path: githubPullPath(url) })).filter(link => link.path).map(link => ({ ...link, key: `${link.id}:${link.path}` })) : []
-  const linkedPullsKey = linkedPulls.map(link => link.key).sort().join('|')
+  const linkedPullsKey = linkedCard ? cardPullUrls(linkedCard).filter(parsePullRequestUrl).join('\n') : ''
 
   useEffect(() => {
-    if (!online || !linkedPulls.length) return undefined
+    if (!online || !linkedPullsKey) return undefined
     let active = true
-    Promise.all(linkedPulls.map(async link => {
+    Promise.all(linkedPullsKey.split('\n').map(async url => {
+      const { owner, repo, number } = parsePullRequestUrl(url)
       try {
-        const response = await fetch(`/api/github/api/${link.path}`, { headers: { Authorization: `Bearer ${token}` } })
-        return { key: link.key, status: response.ok ? pullStatus(await response.json()) : { label: 'Unavailable', tone: 'unavailable' } }
+        const response = await fetch(`/api/github/api/repos/${owner}/${repo}/pulls/${number}`, { headers: { Authorization: `Bearer ${token}` } })
+        return [url, pullRequestStatus(response.status, response.ok ? await response.json() : null)]
       } catch {
-        return { key: link.key, status: { label: 'Unavailable', tone: 'unavailable' } }
+        return [url, pullRequestStatus(0)]
       }
-    })).then(results => {
-      if (!active) return
-      setPullStatuses(Object.fromEntries(results.map(result => [result.key, result.status])))
-    })
+    })).then(results => { if (active) setPullStatuses(Object.fromEntries(results)) })
     return () => { active = false }
   }, [linkedPullsKey, online, token, pullStatusRefresh])
 
@@ -1879,7 +1861,7 @@ export default function Board({
             }} onCancel={() => { if (isDraftCard) { setDraftCard(null); setOpenCardId(null) } }} />
             {!isDraftCard && <>
             <CardNotesEditor card={openCard_} canWrite={access.canWrite} onCommit={notes => updateCard(openCard_.id, { notes })} />
-            <PullRequestReferences card={openCard_} canWrite={access.canWrite} statuses={pullStatuses} onUpdate={(previousUrl, nextUrl) => mutate({ type: 'edit-pull-request', cardId: openCard_.id, previousUrl, nextUrl })} onRefresh={() => setPullStatusRefresh(value => value + 1)} />
+            <PullRequestReferences card={openCard_} canWrite={access.canWrite} online={online} statuses={pullStatuses} onUpdate={(previousUrl, nextUrl) => mutate({ type: 'edit-pull-request', cardId: openCard_.id, previousUrl, nextUrl })} onRefresh={() => setPullStatusRefresh(value => value + 1)} />
 
             <div>
               <div className="kb-section-heading"><h3>Checklist</h3>{Array.isArray(openCard_.checklist) && openCard_.checklist.length > 0 && <span>{openCard_.checklist.filter(item => item.done).length}/{openCard_.checklist.length}</span>}</div>
