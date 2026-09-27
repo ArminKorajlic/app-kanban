@@ -264,6 +264,8 @@ test('component-level viewer and keyboard contract gates writes, reorders, and m
     const at = sheetSource.indexOf(marker)
     return at >= 0 && (index === 0 || sheetSource.indexOf(markers[index - 1]) < at)
   })
+  assert.match(sheetSource, /isDraftCard \|\| openCardId === createdCardId \? 'New card'/,
+    'a card created in the sheet keeps its New card heading after it expands')
   assert.ok(inOrder(['<LabelPicker', '<AssigneePicker', 'kb-card-toolbar-done']),
     'the card header reads label, assignee, then Done')
   assert.ok(inOrder(['<CardNotesEditor', '<ChecklistEditor', 'className="kb-attach-drop', 'aria-label="Card due date"', '<PullRequestReferences']),
