@@ -334,3 +334,27 @@ test('card-title links open directly and pull-request status stays informational
   assert.doesNotMatch(boardSource, /moveCard\(card\.id, done\.id, null\)/)
   assert.match(themeSource, /\.kb-pr-reference/)
 })
+
+test('new cards expose details before a title and keep draft edits in the eventual add', async () => {
+  const source = await readFile(new URL('../ui/Board.jsx', import.meta.url), 'utf8')
+  const sheet = source.slice(source.indexOf('className="kb-card-toolbar"'))
+  const draftGate = sheet.indexOf('{!isDraftCard && <>')
+  for (const field of ['<CardNotesEditor', '<ChecklistEditor', 'className="kb-attach-drop', 'aria-label="Card due date"', '<PullRequestReferences']) {
+    assert.ok(sheet.indexOf(field) < draftGate, field + ' is visible for drafts')
+  }
+  assert.match(source, /applyBoardOp\(doc, operation\)/)
+  assert.match(source, /card: \{ \.\.\.draftCard.card, title \}/)
+  const draft = { columns: [], cards: { draft: { id: 'draft', title: '', checklist: [] } } }
+  for (const op of [
+    { type: 'update-card', patch: { notes: 'Details first', due: '2026-10-01' } },
+    { type: 'add-checklist-item', item: { id: 'item', text: 'First step', done: false } },
+    { type: 'set-checklist-item', itemId: 'item', done: true },
+    { type: 'edit-pull-request', previousUrl: null, nextUrl: 'https://github.com/example/repo/pull/1' },
+  ]) applyBoardOp(draft, { ...op, cardId: 'draft' })
+  const board = { columns: [{ id: 'todo', cardIds: [] }], cards: {} }
+  applyBoardOp(board, { type: 'add-card', columnId: 'todo', card: { ...draft.cards.draft, title: 'Title last' } })
+  assert.equal(board.cards.draft.notes, 'Details first')
+  assert.equal(board.cards.draft.due, '2026-10-01')
+  assert.equal(board.cards.draft.checklist[0].done, true)
+  assert.equal(board.cards.draft.pullRequestUrls.length, 1)
+})
