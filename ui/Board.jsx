@@ -1307,26 +1307,41 @@ export default function Board({
     setOpenCardId(card.id)
   }
 
+  // Draft edits use the same operations as saved cards, without creating
+  // an empty board record. All fields travel together when the title commits.
+  const mutateCard = operation => {
+    if (draftCard?.boardId === boardId && draftCard.card.id === operation.cardId) {
+      setDraftCard(current => {
+        if (!current || current.card.id !== operation.cardId) return current
+        const doc = { columns: [], cards: { [current.card.id]: structuredClone(current.card) } }
+        applyBoardOp(doc, operation)
+        return { ...current, card: doc.cards[current.card.id] }
+      })
+      return true
+    }
+    return mutate(operation)
+  }
+
   const updateCard = (cardId, patch) => {
-    mutate({ type: 'update-card', cardId, patch })
+    mutateCard({ type: 'update-card', cardId, patch })
   }
 
   const addCheckItem = (cardId, text) => {
     const item = { id: uid(), text, done: false }
-    mutate({ type: 'add-checklist-item', cardId, item })
+    mutateCard({ type: 'add-checklist-item', cardId, item })
   }
 
   const editCheckItem = (cardId, itemId, text) => {
-    mutate({ type: 'update-checklist-item', cardId, itemId, text })
+    mutateCard({ type: 'update-checklist-item', cardId, itemId, text })
   }
 
   const toggleCheckItem = (cardId, itemId) => {
-    const item = boardRef.current?.cards[cardId]?.checklist?.find(candidate => candidate.id === itemId)
-    if (item) mutate({ type: 'set-checklist-item', cardId, itemId, done: item.done !== true })
+    const item = (draftCard?.card.id === cardId ? draftCard.card : boardRef.current?.cards[cardId])?.checklist?.find(candidate => candidate.id === itemId)
+    if (item) mutateCard({ type: 'set-checklist-item', cardId, itemId, done: item.done !== true })
   }
 
   const removeCheckItem = (cardId, itemId) => {
-    mutate({ type: 'delete-checklist-item', cardId, itemId })
+    mutateCard({ type: 'delete-checklist-item', cardId, itemId })
   }
 
   const deleteCard = cardId => {
@@ -1925,7 +1940,6 @@ export default function Board({
               if (saved) { setDraftCard(null); window.mobius?.signal?.('item_created', { type: 'card' }) }
               return saved
             }} onCancel={() => { if (isDraftCard) { setDraftCard(null); setOpenCardId(null) } }} />
-            {!isDraftCard && <>
             <CardNotesEditor card={openCard_} canWrite={access.canWrite} onCommit={notes => updateCard(openCard_.id, { notes })} />
 
             <ChecklistEditor checklist={Array.isArray(openCard_.checklist) ? openCard_.checklist : []} canWrite={access.canWrite} onAdd={text => addCheckItem(openCard_.id, text)} onToggle={itemId => toggleCheckItem(openCard_.id, itemId)} onDelete={itemId => removeCheckItem(openCard_.id, itemId)} onEdit={(itemId, text) => editCheckItem(openCard_.id, itemId, text)} />
@@ -1969,12 +1983,13 @@ export default function Board({
                   className="kb-visually-hidden"
                   type="file"
                   multiple
+                  disabled={isDraftCard || attachmentBusy}
                   onChange={attachFromInput}
                 />
                 <button
                   className={`kb-attach-drop${attachmentDropActive ? ' is-dragging' : ''}`}
                   type="button"
-                  disabled={attachmentBusy || (openCard_.attachments?.length || 0) >= MAX_CARD_ATTACHMENTS}
+                  disabled={isDraftCard || attachmentBusy || (openCard_.attachments?.length || 0) >= MAX_CARD_ATTACHMENTS}
                   onClick={() => fileInputRef.current?.click()}
                   onDragOver={event => { if (event.dataTransfer?.types?.includes('Files')) { event.preventDefault(); setAttachmentDropActive(true) } }}
                   onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget)) setAttachmentDropActive(false) }}
@@ -1983,7 +1998,7 @@ export default function Board({
                   <span className="kb-attach-drop-icon"><Paperclip aria-hidden="true" /></span>
                   <span className="kb-attach-drop-copy">
                     <strong>{attachmentBusy ? 'Adding files…' : 'Add attachment'}</strong>
-                    <small>{(openCard_.attachments?.length || 0) >= MAX_CARD_ATTACHMENTS
+                    <small>{isDraftCard ? 'Add a title to attach files' : (openCard_.attachments?.length || 0) >= MAX_CARD_ATTACHMENTS
                       ? `Limit of ${MAX_CARD_ATTACHMENTS} reached`
                       : <>Images or files · <span className="kb-desktop-only-inline">drop or </span>paste here{openCard_.attachments?.length ? ` · ${openCard_.attachments.length} of ${MAX_CARD_ATTACHMENTS}` : ''}</>}</small>
                   </span>
@@ -2006,8 +2021,9 @@ export default function Board({
               </div>
             </div>
 
-            <PullRequestReferences card={openCard_} canWrite={access.canWrite} online={online} statuses={pullStatuses} onUpdate={(previousUrl, nextUrl) => mutate({ type: 'edit-pull-request', cardId: openCard_.id, previousUrl, nextUrl })} onRefresh={() => setPullStatusRefresh(value => value + 1)} />
+            <PullRequestReferences card={openCard_} canWrite={access.canWrite} online={online} statuses={pullStatuses} onUpdate={(previousUrl, nextUrl) => mutateCard({ type: 'edit-pull-request', cardId: openCard_.id, previousUrl, nextUrl })} onRefresh={() => setPullStatusRefresh(value => value + 1)} />
 
+            {!isDraftCard && <>
             {openCardColumn && <div className="kb-status-block kb-mobile-only">
               <h3>Status</h3>
               {access.canWrite ? <div className="kb-status-seg" role="radiogroup" aria-label="Card status">
