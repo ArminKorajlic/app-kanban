@@ -531,3 +531,35 @@ export async function resolveMemberHandles(hosts, token, request = fetch, signal
   }))
   return verified
 }
+
+// Photos are fetched once per member, never once per card. Identity-bearing
+// hosts come from joined membership; a display name never chooses a photo.
+export async function loadMemberAvatar(host, localHost, token, fetcher = fetch, signal) {
+  if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(host || '')) return ''
+  const url = host === localHost
+    ? '/api/identity/avatar'
+    : `/api/proxy?url=${encodeURIComponent(`https://${host}/api/app-services/social/avatar`)}`
+  let reader
+  try {
+    const response = await fetcher(url, { headers: { Authorization: `Bearer ${token}` }, signal })
+    reader = response.body?.getReader()
+    const type = response.headers.get('Content-Type') || ''
+    const limit = 2 * 1024 * 1024
+    if (!response.ok || !reader || !/^image\/(png|jpeg|webp|gif)$/i.test(type) || Number(response.headers.get('Content-Length')) > limit) return ''
+    const chunks = []
+    let size = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > limit) return ''
+      chunks.push(value)
+    }
+    if (!size) return ''
+    const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer())
+    let binary = ''
+    for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+    return `data:${type.toLowerCase()};base64,${btoa(binary)}`
+  } catch { return '' } // Offline and unpublished profiles retain initials.
+  finally { if (reader) { await reader.cancel().catch(() => {}); reader.releaseLock() } }
+}

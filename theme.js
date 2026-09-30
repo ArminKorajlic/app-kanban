@@ -87,6 +87,7 @@ export const CSS = `
     font-weight: 750;
     letter-spacing: -0.02em;
   }
+  .kb-avatar-photo { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
   .kb-member-avatar-small { width: 30px; height: 30px; margin-left: -6px; font-size: 10px; }
   .kb-presence-dot {
     position: absolute;
@@ -225,15 +226,6 @@ export const CSS = `
   .kb-filter-label-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .kb-filter-dot { width: 16px; height: 16px; border-radius: 999px; display: block; }
   .kb-filter-dot.kb-none { background: var(--surface-2); border: 1px solid var(--border); position: relative; }
-  .kb-filter-dot.kb-none::after {
-    content: '';
-    position: absolute;
-    left: 7px;
-    top: 1px;
-    height: 12px;
-    border-left: 2px solid var(--muted);
-    transform: rotate(45deg);
-  }
   .kb-col {
     flex: 0 0 auto;
     width: 320px;
@@ -707,26 +699,11 @@ export const CSS = `
     border: 0;
   }
   .kb-field-spaced { margin-top: 8px; }
-  .kb-title-input,
-  .kb-notes-input {
-    flex: 0 0 auto;
-    max-height: none;
-    overflow: hidden;
-    font-size: 16px;
-  }
   .kb-detail-field { position: relative; min-width: 0; flex: 0 0 auto; }
-  .kb-editable-field { cursor: text; border-radius: 10px; }
+  .kb-editable-field { cursor: text; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .kb-editable-field:hover { background: color-mix(in srgb, var(--surface-2) 68%, transparent); }
-  .kb-editable-field:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .kb-title-input {
-    min-height: 44px;
-    padding-inline: 2px;
-    border-color: transparent;
-    background: transparent;
-    font-size: 20px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-  }
+  .kb-editable-field:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .kb-editable-field[data-empty="true"]::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
   .kb-title-display {
     display: block;
     width: 100%;
@@ -744,6 +721,8 @@ export const CSS = `
     overflow-wrap: anywhere;
   }
   .kb-notes-display {
+    flex: 0 0 auto;
+    max-height: none;
     min-height: 68px;
     padding: 10px 12px;
     border-radius: 10px;
@@ -752,11 +731,8 @@ export const CSS = `
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    pointer-events: none;
   }
   .kb-notes-field:hover .kb-notes-display { background: color-mix(in srgb, var(--surface-2) 68%, transparent); }
-  .kb-notes-edit-hit { position: absolute; inset: 0; z-index: 1; width: 100%; border: 0; border-radius: 10px; background: transparent; cursor: text; }
-  .kb-notes-edit-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .kb-notes-display a { position: relative; z-index: 2; pointer-events: auto; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
   .kb-notes-empty { color: var(--muted); }
   .kb-pr-reference { display: grid; gap: 10px; border-block: 1px solid var(--border); padding-block: 14px; }
@@ -792,13 +768,6 @@ export const CSS = `
     border-radius: 20px;
     scroll-behavior: smooth;
     overscroll-behavior: contain;
-  }
-  .kb-notes-input {
-    resize: none;
-    scroll-margin-block: 16px;
-    border-color: transparent;
-    background: var(--surface-2);
-    line-height: 1.5;
   }
   /* Strengthen hierarchy without changing status colours or mobile board navigation. */
   .kb-root { letter-spacing: -0.005em; }
@@ -859,11 +828,10 @@ export const CSS = `
     cursor: pointer;
   }
   .kb-card-toolbar .kb-icon-trigger { width: 44px; height: 44px; min-height: 44px; justify-content: center; gap: 0; padding: 0; }
-  .kb-card-toolbar .kb-icon-trigger .kb-property-dot { width: 16px; height: 16px; }
-  .kb-card-toolbar .kb-assignee-trigger .kb-assignee-avatar { width: 26px; height: 26px; flex-basis: 26px; font-size: 10px; }
+  .kb-card-toolbar .kb-color-empty { background: transparent; border: 2px solid var(--muted); }
+  .kb-card-toolbar .kb-assignee-trigger .kb-assignee-avatar { width: 100%; height: 100%; flex-basis: 100%; border: 0; font-size: 14px; }
+  .kb-card-toolbar .kb-assignee-trigger { overflow: hidden; }
   .kb-card-toolbar .kb-assignee-trigger:disabled, .kb-label-trigger:disabled { cursor: default; }
-  .kb-label-trigger > svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--muted); }
-  .kb-label-dot-empty { border: 1.5px dashed var(--muted); }
   .kb-label-picker { flex: 0 0 auto; }
   .kb-label-menu {
     position: absolute;
@@ -940,7 +908,6 @@ export const CSS = `
     text-align: right;
   }
   .kb-property-value { min-width: 0; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13.5px; text-transform: capitalize; }
-  .kb-property-dot { width: 12px; height: 12px; flex: 0 0 auto; border-radius: 999px; }
   .kb-status-block { min-width: 0; }
   .kb-status-block > h3 { margin-bottom: 7px; }
   .kb-status-seg {
@@ -998,9 +965,9 @@ export const CSS = `
     font-size: 13.5px;
     overflow-wrap: anywhere;
   }
-  .kb-check-toggle input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
-  .kb-check-toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .kb-check-toggle input:disabled { cursor: default; }
+  .kb-check-toggle input[type="checkbox"] { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
+  .kb-check-toggle input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .kb-check-toggle input[type="checkbox"]:disabled { cursor: default; }
   .kb-check-done { color: var(--muted); text-decoration: line-through; }
   .kb-check-add { display: flex; align-items: center; gap: 8px; }
   .kb-check-add .kb-input { background: transparent; }
@@ -1013,13 +980,8 @@ export const CSS = `
     padding: 0;
   }
   .kb-swatch.kb-on { border-color: var(--text); }
-  .kb-swatch.kb-none { background: var(--surface-2); position: relative; }
-  .kb-swatch.kb-none::after {
-    content: '';
-    position: absolute; inset: 6px 13px;
-    transform: rotate(45deg);
-    border-left: 2px solid var(--muted);
-  }
+  .kb-swatch.kb-none { background: transparent; border: 2px solid var(--muted); }
+  .kb-swatch.kb-none.kb-on { border-color: var(--text); }
   .kb-swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .kb-chips { display: flex; flex-wrap: wrap; gap: 8px; }
   .kb-chip {
@@ -1310,7 +1272,6 @@ export const CSS = `
     }
   .kb-card-sheet { gap: 12px; }
     .kb-card-sheet > * { flex: 0 0 auto; min-height: 0; }
-    .kb-card-sheet .kb-notes-input { flex: 0 0 auto; min-height: 120px; }
     .kb-mobile-only { display: block; }
     .kb-desktop-only, .kb-desktop-only-inline { display: none; }
     .kb-card-sheet .kb-field-spaced,
