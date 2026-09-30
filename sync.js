@@ -539,14 +539,27 @@ export async function loadMemberAvatar(host, localHost, token, fetcher = fetch, 
   const url = host === localHost
     ? '/api/identity/avatar'
     : `/api/proxy?url=${encodeURIComponent(`https://${host}/api/app-services/social/avatar`)}`
+  let reader
   try {
     const response = await fetcher(url, { headers: { Authorization: `Bearer ${token}` }, signal })
-    if (!response.ok) return ''
-    const blob = await response.blob()
-    if (!/^image\/(png|jpeg|webp|gif)$/i.test(blob.type) || !blob.size || blob.size > 2 * 1024 * 1024) return ''
-    const bytes = new Uint8Array(await blob.arrayBuffer())
+    reader = response.body?.getReader()
+    const type = response.headers.get('Content-Type') || ''
+    const limit = 2 * 1024 * 1024
+    if (!response.ok || !reader || !/^image\/(png|jpeg|webp|gif)$/i.test(type) || Number(response.headers.get('Content-Length')) > limit) return ''
+    const chunks = []
+    let size = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > limit) return ''
+      chunks.push(value)
+    }
+    if (!size) return ''
+    const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer())
     let binary = ''
     for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
-    return `data:${blob.type};base64,${btoa(binary)}`
+    return `data:${type.toLowerCase()};base64,${btoa(binary)}`
   } catch { return '' } // Offline and unpublished profiles retain initials.
+  finally { if (reader) { await reader.cancel().catch(() => {}); reader.releaseLock() } }
 }

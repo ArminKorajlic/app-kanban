@@ -58,7 +58,6 @@ function Card({ boardId, share, card, assigneeLabel, assigneeMember, lifted, onO
   const dueStatus = dueDateStatus(card.due)
   const progress = checklistProgress(card.checklist)
   const assignee = (assigneeLabel ?? card.assignee)?.trim()
-  const avatar = assignee ? assigneeAvatar(assignee) : null
   const notePreview = String(card.notes || '').trim()
   const attachments = card.attachments || []
   const cover = attachments.find(isPreviewImage)
@@ -92,7 +91,7 @@ function Card({ boardId, share, card, assigneeLabel, assigneeMember, lifted, onO
       {!cover && attachments.length > 0 && <div className="kb-card-attachment-summary">
         <Paperclip aria-hidden="true" /> {attachments.length} {attachments.length === 1 ? 'file' : 'files'}
       </div>}
-      {(dueStatus || progress.total > 0 || avatar) && <div className="kb-card-meta">
+      {(dueStatus || progress.total > 0 || assignee) && <div className="kb-card-meta">
         {dueStatus && <span className={`kb-due kb-due-${dueStatus}`}>{formatDueDate(card.due)}</span>}
         {progress.total > 0 && <div className="kb-check-progress">
           <span>{progress.done}/{progress.total}</span>
@@ -108,7 +107,7 @@ function Card({ boardId, share, card, assigneeLabel, assigneeMember, lifted, onO
           </span>
         </div>}
         <span className="kb-card-meta-spacer" />
-        {avatar && <MemberAvatar member={assigneeMember || { name: assignee }} className="kb-avatar" presence={false} />}
+        {assignee && <MemberAvatar member={assigneeMember || { name: assignee }} className="kb-avatar" presence={false} />}
       </div>}
     </div>
   )
@@ -267,11 +266,8 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = f
   const [query, setQuery] = useState('')
   const [menuStyle, setMenuStyle] = useState(undefined)
   const joined = (members || []).filter(member => !member.pending && member.host)
-  const selectedMember = card.assigneeHost
-    ? collaboratorForHost(joined, card.assigneeHost)
-    : joined.find(member => memberLabel(member) === card.assignee)
+  const selectedMember = collaboratorForHost(joined, card.assigneeHost)
   const selectedLabel = cardAssigneeLabel(card, joined)
-  const selectedAvatar = selectedLabel ? assigneeAvatar(selectedLabel) : null
   const selfMember = selfCollaborator(joined, share)
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const visibleMembers = joined.filter(member => {
@@ -336,7 +332,7 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = f
         disabled={!canWrite}
         onClick={() => canWrite && togglePicker()}
       >
-        {selectedAvatar
+        {selectedLabel
           ? <MemberAvatar member={selectedMember || { name: selectedLabel }} className="kb-assignee-avatar" presence={false} />
           : <span className="kb-assignee-avatar kb-assignee-avatar-empty"><User aria-hidden="true" /></span>}
         {!iconOnly && <span className={`kb-assignee-trigger-label${selectedLabel ? '' : ' is-empty'}`}>{selectedLabel || 'Unassigned'}</span>}
@@ -386,7 +382,7 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = f
               </button>
             })}
             {privateName && privateName.toLocaleLowerCase() !== selectedLabel.toLocaleLowerCase() && <button type="button" className="kb-assignee-option" aria-pressed="false" onClick={() => choose({ assignee: privateName, assigneeHost: '' })}>
-              <span className="kb-assignee-avatar" style={{ background: assigneeAvatar(privateName).background, color: assigneeAvatar(privateName).color }}>{assigneeAvatar(privateName).initials}</span>
+              <MemberAvatar member={{ name: privateName }} className="kb-assignee-avatar" presence={false} />
               <span className="kb-assignee-option-copy"><strong>Assign “{privateName}”</strong><small>Use this name</small></span>
             </button>}
             {share && visibleMembers.length === 0 && <div className="kb-assignee-empty">No matching people</div>}
@@ -421,9 +417,7 @@ function LabelPicker({ label, canWrite, onChange }) {
       aria-expanded={open}
       disabled={!canWrite}
       onClick={() => setOpen(value => !value)}
-    >
-      <span className="kb-property-dot" aria-hidden="true" />
-    </button>
+    />
     {open && <div ref={menuRef} className="kb-label-menu" role="dialog" aria-label="Choose label">
       <div className="kb-swatches">
         {Object.entries(LABELS).map(([name, color]) => (
@@ -483,7 +477,7 @@ function InlineCardText({ value, className, label, placeholder, autoFocus = fals
     editor.dataset.empty = text ? 'false' : 'true'
   }, [links])
   useLayoutEffect(() => {
-    if (!focusedRef.current) renderText(value || '')
+    if (!focusedRef.current && !dirtyRef.current) renderText(value || '')
   }, [value, renderText])
   useLayoutEffect(() => { if (autoFocus) editorRef.current?.focus() }, [])
   return <div
@@ -931,8 +925,10 @@ export default function Board({
     return () => controller.abort()
   }, [profileHostsKey, token])
 
-  const avatarHostsKey = JSON.stringify([...new Set((members || [])
-    .filter(member => !member.pending).map(member => member.host).filter(Boolean))].sort())
+  const avatarHostsKey = JSON.stringify((members || [])
+    .filter(member => !member.pending && member.host)
+    .map(member => [member.host, (member.hosts || [member.host]).includes(localDeploymentHost) ? localDeploymentHost : member.host])
+    .sort(([a], [b]) => a.localeCompare(b)))
   useEffect(() => {
     const controller = new AbortController()
     const hosts = JSON.parse(avatarHostsKey)
@@ -940,8 +936,8 @@ export default function Board({
     let cursor = 0
     const worker = async () => {
       while (cursor < hosts.length && !controller.signal.aborted) {
-        const host = hosts[cursor++]
-        const avatar = await loadMemberAvatar(host, localDeploymentHost, token, fetch, controller.signal)
+        const [host, avatarHost] = hosts[cursor++]
+        const avatar = await loadMemberAvatar(avatarHost, localDeploymentHost, token, fetch, controller.signal)
         if (!controller.signal.aborted) setMemberAvatars(previous => ({ ...previous, [host]: avatar }))
       }
     }
@@ -951,7 +947,7 @@ export default function Board({
 
   const displayMembers = (members || []).map(record => {
     const member = { ...record, avatar: memberAvatars[record.host] || '' }
-    if (member.host === localDeploymentHost && localDeploymentHost) {
+    if (localDeploymentHost && (member.hosts || [member.host]).includes(localDeploymentHost)) {
       return { ...member, handle: profileHandle || member.handle, name: profileHandle ? '' : (profileName || member.name) }
     }
     const handle = (member.hosts || [member.host]).map(host => verifiedHandles[host]).find(Boolean)
@@ -1358,7 +1354,7 @@ export default function Board({
   }
 
   const updateCard = (cardId, patch) => {
-    mutateCard({ type: 'update-card', cardId, patch })
+    return mutateCard({ type: 'update-card', cardId, patch })
   }
 
   const addCheckItem = (cardId, text) => {
@@ -1843,7 +1839,7 @@ export default function Board({
               share={share}
               card={card}
               assigneeLabel={assigneeLabelForCard(card)}
-              assigneeMember={card.assigneeHost ? collaboratorForHost(displayMembers, card.assigneeHost) : displayMembers.find(member => memberLabel(member) === card.assignee)}
+              assigneeMember={collaboratorForHost(displayMembers, card.assigneeHost)}
               lifted={drag?.cardId === card.id && drag.moved}
               onOpen={openCard}
               onDragStart={startDrag}

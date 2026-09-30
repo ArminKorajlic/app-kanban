@@ -700,10 +700,9 @@ export const CSS = `
   }
   .kb-field-spaced { margin-top: 8px; }
   .kb-detail-field { position: relative; min-width: 0; flex: 0 0 auto; }
-  .kb-editable-field { cursor: text; border-radius: 10px; }
+  .kb-editable-field { cursor: text; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .kb-editable-field:hover { background: color-mix(in srgb, var(--surface-2) 68%, transparent); }
   .kb-editable-field:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .kb-editable-field { white-space: pre-wrap; overflow-wrap: anywhere; }
   .kb-editable-field[data-empty="true"]::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
   .kb-title-display {
     display: block;
@@ -829,12 +828,10 @@ export const CSS = `
     cursor: pointer;
   }
   .kb-card-toolbar .kb-icon-trigger { width: 44px; height: 44px; min-height: 44px; justify-content: center; gap: 0; padding: 0; }
-  .kb-card-toolbar .kb-icon-trigger .kb-property-dot { display: none; }
   .kb-card-toolbar .kb-color-empty { background: transparent; border: 2px solid var(--muted); }
   .kb-card-toolbar .kb-assignee-trigger .kb-assignee-avatar { width: 100%; height: 100%; flex-basis: 100%; border: 0; font-size: 14px; }
   .kb-card-toolbar .kb-assignee-trigger { overflow: hidden; }
   .kb-card-toolbar .kb-assignee-trigger:disabled, .kb-label-trigger:disabled { cursor: default; }
-  .kb-label-trigger > svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--muted); }
   .kb-label-picker { flex: 0 0 auto; }
   .kb-label-menu {
     position: absolute;
@@ -911,7 +908,6 @@ export const CSS = `
     text-align: right;
   }
   .kb-property-value { min-width: 0; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13.5px; text-transform: capitalize; }
-  .kb-property-dot { width: 12px; height: 12px; flex: 0 0 auto; border-radius: 999px; }
   .kb-status-block { min-width: 0; }
   .kb-status-block > h3 { margin-bottom: 7px; }
   .kb-status-seg {
@@ -969,9 +965,9 @@ export const CSS = `
     font-size: 13.5px;
     overflow-wrap: anywhere;
   }
-  .kb-check-toggle input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
-  .kb-check-toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .kb-check-toggle input:disabled { cursor: default; }
+  .kb-check-toggle input[type="checkbox"] { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
+  .kb-check-toggle input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .kb-check-toggle input[type="checkbox"]:disabled { cursor: default; }
   .kb-check-done { color: var(--muted); text-decoration: line-through; }
   .kb-check-add { display: flex; align-items: center; gap: 8px; }
   .kb-check-add .kb-input { background: transparent; }

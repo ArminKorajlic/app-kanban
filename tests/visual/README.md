@@ -13,11 +13,13 @@ original operation and that starting the download dismisses only the exported
 rejected-edit reminder. Never apply as a real app.
 
 card-editing.fixture.jsx exercises exported native title/notes editors, profile
-photos, presence, color and assignee controls. Export its named components only
+photos, presence, color and assignee controls, and checklist editing. Export its named components only
 in the disposable copy. All network and storage operations are blocked; changes
 are fixture state only. Verify native caret click offsets, plain-text paste,
 undo, multiline notes, save-on-blur, Escape, links, remote updates, read-only and
-blank drafts on desktop and a narrow viewport. Never apply this fixture.
+blank drafts on desktop and a narrow viewport. Also check checklist prefill and usable
+width, Enter/blur saves, Escape, completed items, blank edits, hostless avatar
+identity, and rejected-save retention/retry. Never apply this fixture.
 
 With that isolated fixture loaded in agent-browser, run
 `node tests/visual/card-editing.check.mjs <app-id>`. It connects to the current browser's

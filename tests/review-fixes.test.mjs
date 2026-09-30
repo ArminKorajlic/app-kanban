@@ -274,7 +274,7 @@ test('component-level viewer and keyboard contract gates writes, reorders, and m
   assert.match(boardSource, /<LinkifiedText text=\{card\.notes\} \/>/)
   assert.match(boardSource, /contentEditable="plaintext-only"/)
   assert.match(boardSource, /role="textbox"[\s\S]*tabIndex=\{0\}/)
-  assert.match(boardSource, /if \(!focusedRef\.current\) renderText\(value \|\| ''\)/)
+  assert.match(boardSource, /if \(!focusedRef\.current && !dirtyRef\.current\) renderText\(value \|\| ''\)/)
   assert.match(boardSource, /label="Card notes"[\s\S]*links/)
   assert.match(boardSource, /className="kb-card-open"[^\n]*aria-label=/)
   assert.match(boardSource, /event\.key === 'Escape'[\s\S]*onCancel\?\.\(\)/)
@@ -358,4 +358,15 @@ test('new cards expose details before a title and keep draft edits in the eventu
   assert.equal(board.cards.draft.due, '2026-10-01')
   assert.equal(board.cards.draft.checklist[0].done, true)
   assert.equal(board.cards.draft.pullRequestUrls.length, 1)
+})
+
+test('checklist text editors are not given checkbox dimensions', async () => {
+  const source = await readFile(new URL('../theme.js', import.meta.url), 'utf8')
+  assert.match(source, /\.kb-check-toggle input\[type="checkbox"\] \{ width: 20px/)
+  assert.doesNotMatch(source, /\.kb-check-toggle input\s*\{/)
+})
+
+test('existing card saves propagate acceptance to native editors', async () => {
+  const source = await readFile(new URL('../ui/Board.jsx', import.meta.url), 'utf8')
+  assert.match(source, /const updateCard = \(cardId, patch\) => \{\s*return mutateCard\(/)
 })

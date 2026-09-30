@@ -22,3 +22,33 @@ test('unpublished, offline, malformed hosts and non-image responses fall back wi
   assert.equal(await loadMemberAvatar('peer.example/secret','me.example','app-only',async()=>{called=true}), '')
   assert.equal(called,false)
 })
+
+test('oversized avatar streams are cancelled before reading the remaining response', async () => {
+  let reads = 0, cancelled = false
+  const stream = new ReadableStream({
+    pull(controller) { reads++; controller.enqueue(new Uint8Array(1024 * 1024)) },
+    cancel() { cancelled = true },
+  }, { highWaterMark: 0 })
+  assert.equal(await loadMemberAvatar('peer.example', 'me.example', 'app-only', async () => new Response(stream, { headers: { 'Content-Type': 'image/png' } })), '')
+  assert.equal(reads, 3)
+  assert.equal(cancelled, true)
+})
+
+test('declared oversized avatars are cancelled without reading the body', async () => {
+  let reads = 0, cancelled = false
+  const stream = new ReadableStream({
+    pull(controller) { reads++; controller.enqueue(new Uint8Array([1])) },
+    cancel() { cancelled = true },
+  }, { highWaterMark: 0 })
+  assert.equal(await loadMemberAvatar('peer.example', 'me.example', 'app-only', async () => new Response(stream, { headers: { 'Content-Type': 'image/png', 'Content-Length': String(2 * 1024 * 1024 + 1) } })), '')
+  assert.equal(reads, 0)
+  assert.equal(cancelled, true)
+})
+
+test('empty and aborted avatar reads keep initials and release the stream', async () => {
+  assert.equal(await loadMemberAvatar('peer.example', 'me.example', 'app-only', async () => new Response(new Blob([], { type: 'image/png' }))), '')
+  const signal = new AbortController().signal
+  const stream = new ReadableStream({ pull(controller) { controller.error(new DOMException('Aborted', 'AbortError')) } })
+  assert.equal(await loadMemberAvatar('peer.example', 'me.example', 'app-only', async () => new Response(stream, { headers: { 'Content-Type': 'image/png' } }), signal), '')
+  assert.equal(stream.locked, false)
+})
