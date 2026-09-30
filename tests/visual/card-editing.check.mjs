@@ -86,35 +86,24 @@ async function pressKey(key, code, windowsVirtualKeyCode, modifiers) {
   }
 }
 
+const state = () => evaluate('window.__cardEditing')
+const wait = (milliseconds = 40) => new Promise(resolve => setTimeout(resolve, milliseconds))
+
 try {
   assert.equal(
     await evaluate('typeof window.__cardEditing?.remote'),
     'function',
     'Refusing to test/edit a live board: load the isolated card fixture first',
   )
-  await evaluate(`
-    window.__cardEditing.cancelled = 0
-    window.__cardEditing.commits = []
-    window.__cardEditing.links = []
-    window.__cardEditing.remote({
-      id: 'fixture-reset',
-      title: 'Polish Kanban controls and editing',
-      notes: 'First line of card notes.\\nSecond line with https://example.com/docs.',
-      label: 'blue',
-      assignee: '@memberone',
-      assigneeHost: 'me.example',
-    })
-  `)
-  await new Promise(resolve => setTimeout(resolve, 40))
-  await checkControls({ evaluate, call, pageSession })
-  await checkChecklist({ evaluate })
-  await checkEditing({ evaluate })
+  await wait()
+  await checkControls()
+  await checkChecklist()
+  await checkEditing()
 } finally {
   socket.close()
 }
 
-async function checkControls({ evaluate, call, pageSession }) {
-  const pause = () => new Promise(resolve => setTimeout(resolve, 35))
+async function checkControls() {
   const parent = await call('Runtime.evaluate', {
     expression: `(() => {
       const bounds = document.querySelector('iframe[title="Kanban"]').getBoundingClientRect()
@@ -135,7 +124,7 @@ async function checkControls({ evaluate, call, pageSession }) {
         clickCount: 1,
       }, pageSession)
     }
-    await pause()
+    await wait(35)
   }
 
   async function click(selector) {
@@ -163,14 +152,12 @@ async function checkControls({ evaluate, call, pageSession }) {
     })`)
   }
 
-  const state = () => evaluate('window.__cardEditing')
-
   let selection = await clickTextAt('Card title', 7)
   assert.equal(selection.active, 'Card title')
   assert.ok(Math.abs(selection.offset - 7) <= 1, JSON.stringify(selection))
   const before = await evaluate(`document.querySelector('[aria-label="Card title"]').innerText`)
   await insertText('X')
-  await pause()
+  await wait(35)
   assert.equal(
     await evaluate(`document.querySelector('[aria-label="Card title"]').innerText`),
     before.slice(0, selection.offset) + 'X' + before.slice(selection.offset),
@@ -182,9 +169,9 @@ async function checkControls({ evaluate, call, pageSession }) {
   selection = await clickTextAt('Card notes', 6)
   assert.ok(Math.abs(selection.offset - 6) <= 1)
   await insertText('ZZ')
-  await pause()
+  await wait(35)
   await pressKey('Escape', 'Escape', 27)
-  await pause()
+  await wait(35)
   await click('.kb-card-toolbar-done')
   assert.equal((await state()).current.notes, 'First line of card notes.\nSecond line with https://example.com/docs.')
   console.log('PASS notes click offset + Escape cancellation does not save')
@@ -192,14 +179,24 @@ async function checkControls({ evaluate, call, pageSession }) {
   await clickTextAt('Card notes', 4)
   const draft = await evaluate(`document.querySelector('[aria-label="Card notes"]').innerText`)
   await evaluate(`window.__cardEditing.remote({notes:'Remote text received'})`)
-  await pause()
+  await wait(35)
   assert.equal(await evaluate(`document.querySelector('[aria-label="Card notes"]').innerText`), draft)
   await click('.kb-card-toolbar-done')
   assert.equal(await evaluate(`document.querySelector('[aria-label="Card notes"]').innerText`), 'Remote text received')
+  await clickTextAt('Card notes', 4)
+  await insertText('Local draft')
+  await evaluate(`window.__cardEditing.remote({notes:'Latest remote note'})`)
+  await wait(35)
+  const commitsBeforeCancel = (await state()).commits.length
+  await pressKey('Escape', 'Escape', 27)
+  await wait(35)
+  assert.equal(await evaluate(`document.querySelector('[aria-label="Card notes"]').innerText`), 'Latest remote note')
+  await click('.kb-card-toolbar-done')
+  assert.equal((await state()).commits.length, commitsBeforeCancel)
   console.log('PASS focused caret/draft survives remote updates; untouched blur adopts latest')
 
   await evaluate(`window.__cardEditing.remote({notes:'First line of card notes.\\nSecond line with https://example.com/docs.'})`)
-  await pause()
+  await wait(35)
   await click('[aria-label="Card notes"] a')
   assert.equal((await state()).links[0][0], 'https://example.com/docs')
   console.log('PASS notes links still open')
@@ -232,17 +229,15 @@ async function checkControls({ evaluate, call, pageSession }) {
   console.log('PASS loaded person photos, full-circle assignee, no horizontal overflow')
 
   await evaluate(`window.__cardEditing.remote({assigneeHost:''})`)
-  await pause()
+  await wait(35)
   assert.equal(await evaluate(`document.querySelector('.kb-assignee-trigger .kb-avatar-photo')`), null)
   console.log('PASS same-name hostless assignment uses initials, not a member photo')
   await evaluate(`window.__cardEditing.remote({assigneeHost:'me.example'})`)
-  await pause()
+  await wait(35)
   assert.ok(await evaluate(`!!document.querySelector('.kb-assignee-trigger .kb-avatar-photo')`))
 }
 
-async function checkEditing({ evaluate }) {
-  const wait = () => new Promise(resolve => setTimeout(resolve, 40))
-  const state = () => evaluate('window.__cardEditing')
+async function checkEditing() {
   const focusDone = () => evaluate(`document.querySelector('.kb-card-toolbar-done').focus()`)
   const notesText = () => evaluate(`document.querySelector('[aria-label="Card notes"]').innerText`)
   const selectNotes = () => evaluate(`
@@ -316,9 +311,7 @@ async function checkEditing({ evaluate }) {
   await focusDone()
 }
 
-async function checkChecklist({ evaluate }) {
-  const wait = () => new Promise(resolve => setTimeout(resolve, 40))
-  const state = () => evaluate('window.__cardEditing')
+async function checkChecklist() {
   async function openItem(index = 0) {
     await evaluate(`document.querySelectorAll('.kb-check-text')[${index}].click()`)
     await wait()

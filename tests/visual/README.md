@@ -18,13 +18,14 @@ components only in a disposable copy of the app. The fixture uses synthetic
 people and card data, blocks network and storage writes, and keeps edits in
 fixture state; never install it in a real app or use production data.
 
-The check covers native caret click offsets, plain-text paste, Undo, multiline
+The check covers native caret click offsets, plain-text insertion, Undo, multiline
 notes, save-on-blur, Escape, links, remote updates, read-only mode, and blank
 drafts. It also covers checklist prefill and usable width, Enter and blur saves,
 completed items and blank-edit guards, hostless avatar identity, and rejected
 save retention and retry. Run it at desktop and narrow phone widths.
 
-With that isolated fixture loaded in agent-browser, run
+Load a fresh isolated fixture in agent-browser before each run, including when
+switching viewport sizes: the checks edit checklist and card state in memory. Run
 `node tests/visual/card-editing.check.mjs <app-id>`. It connects to the current browser's
 CDP session, refuses a live board, accounts for iframe scale, and checks native
 click positions and keyboard behavior without touching any saved board.

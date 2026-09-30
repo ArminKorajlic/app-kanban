@@ -274,7 +274,7 @@ test('component-level viewer and keyboard contract gates writes, reorders, and m
   assert.match(boardSource, /<LinkifiedText text=\{card\.notes\} \/>/)
   assert.match(boardSource, /contentEditable="plaintext-only"/)
   assert.match(boardSource, /role="textbox"[\s\S]*tabIndex=\{0\}/)
-  assert.match(boardSource, /document\.activeElement === editorRef\.current[\s\S]*if \(!isFocused && !dirtyRef\.current\) renderText\(value \|\| ''\)/)
+  assert.match(boardSource, /document\.activeElement === editorRef\.current[\s\S]*if \(!isFocused && !dirtyRef\.current\) renderText\(savedText\)/)
   assert.match(boardSource, /label="Card notes"[\s\S]*links/)
   assert.match(boardSource, /className="kb-card-open"[^\n]*aria-label=/)
   assert.match(boardSource, /event\.key !== 'Escape'[\s\S]*onCancel\?\.\(\)/)

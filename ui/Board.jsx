@@ -497,8 +497,7 @@ function InlineCardText({
 }) {
   const editorRef = useRef(null)
   const dirtyRef = useRef(false)
-  const latestValueRef = useRef(value || '')
-  latestValueRef.current = value || ''
+  const savedText = value || ''
 
   const renderText = useCallback(text => {
     const editor = editorRef.current
@@ -522,8 +521,8 @@ function InlineCardText({
 
   useLayoutEffect(() => {
     const isFocused = document.activeElement === editorRef.current
-    if (!isFocused && !dirtyRef.current) renderText(value || '')
-  }, [value, renderText])
+    if (!isFocused && !dirtyRef.current) renderText(savedText)
+  }, [savedText, renderText])
 
   useLayoutEffect(() => {
     if (autoFocus) editorRef.current?.focus()
@@ -531,12 +530,12 @@ function InlineCardText({
 
   const commitOnBlur = event => {
     const text = event.currentTarget.innerText.replace(/\r\n?/g, '\n')
-    if (dirtyRef.current && text !== latestValueRef.current) {
+    if (dirtyRef.current && text !== savedText) {
       const acceptedText = onCommit(text)
       if (acceptedText === false) return
       renderText(acceptedText ?? text)
     } else {
-      renderText(latestValueRef.current)
+      renderText(savedText)
     }
     dirtyRef.current = false
   }
@@ -547,7 +546,7 @@ function InlineCardText({
     event.preventDefault()
     event.stopPropagation()
     dirtyRef.current = false
-    renderText(latestValueRef.current)
+    renderText(savedText)
     onCancel?.()
   }
 
