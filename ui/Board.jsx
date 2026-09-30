@@ -153,17 +153,29 @@ function MemberAvatar({ member, small = false, className = '', presence = true }
   const label = memberLabel(member) || 'Board member'
   const avatar = assigneeAvatar(label)
   const [failed, setFailed] = useState(false)
-  useEffect(() => { setFailed(false) }, [member.avatar])
+  useEffect(() => {
+    setFailed(false)
+  }, [member.avatar])
+
+  const showPhoto = member.avatar && !failed
   return <span
     className={`kb-member-avatar${small ? ' kb-member-avatar-small' : ''} ${className}`}
-    style={{ background: member.avatar && !failed ? 'transparent' : avatar.background, color: avatar.color }}
+    style={{
+      background: showPhoto ? 'transparent' : avatar.background,
+      color: avatar.color,
+    }}
     title={label}
     role="img"
     aria-label={label}
   >
-    {member.avatar && !failed
-      ? <img className="kb-avatar-photo" src={member.avatar} alt="" onError={() => setFailed(true)} />
-      : avatar.initials}
+    {showPhoto ? (
+      <img
+        className="kb-avatar-photo"
+        src={member.avatar}
+        alt=""
+        onError={() => setFailed(true)}
+      />
+    ) : avatar.initials}
     {presence && member.active && <span className="kb-presence-dot" aria-label="Active now" />}
   </span>
 }
@@ -445,75 +457,130 @@ function linkifiedParts(text) {
       const parsed = new URL(url)
       if (!['http:', 'https:'].includes(parsed.protocol)) return [{ text: part }]
       return [{ text: url, href: parsed.href }, { text: match?.[2] || '' }]
-    } catch { return [{ text: part }] }
+    } catch {
+      return [{ text: part }]
+    }
   })
 }
 
 function LinkifiedText({ text }) {
-  return linkifiedParts(text).map((part, index) => part.href
-    ? <a key={index} href={part.href} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>{part.text}</a>
-    : part.text)
+  return linkifiedParts(text).map((part, index) => {
+    if (!part.href) return part.text
+
+    return (
+      <a
+        key={index}
+        href={part.href}
+        target="_blank"
+        rel="noreferrer"
+        onClick={event => event.stopPropagation()}
+        onKeyDown={event => event.stopPropagation()}
+      >
+        {part.text}
+      </a>
+    )
+  })
 }
 
 // React owns the editor shell, not its text nodes. The browser owns selection,
 // typing, plain-text paste, composition and undo without replacing the clicked
 // surface. Incoming polls update idle editors, never the focused draft/caret.
-function InlineCardText({ value, className, label, placeholder, autoFocus = false, links = false, onCommit, onCancel }) {
+function InlineCardText({
+  value,
+  className,
+  label,
+  placeholder,
+  autoFocus = false,
+  links = false,
+  onCommit,
+  onCancel,
+}) {
   const editorRef = useRef(null)
   const dirtyRef = useRef(false)
-  const focusedRef = useRef(false)
-  const latest = useRef(value || '')
-  latest.current = value || ''
+  const latestValueRef = useRef(value || '')
+  latestValueRef.current = value || ''
+
   const renderText = useCallback(text => {
     const editor = editorRef.current
     if (!editor) return
-    editor.replaceChildren(...(links ? linkifiedParts(text) : [{ text }]).map(part => {
+
+    const parts = links ? linkifiedParts(text) : [{ text }]
+    const nodes = parts.map(part => {
       if (!part.href) return document.createTextNode(part.text)
+
       const anchor = document.createElement('a')
-      anchor.textContent = part.text; anchor.href = part.href
-      anchor.target = '_blank'; anchor.rel = 'noreferrer'
+      anchor.textContent = part.text
+      anchor.href = part.href
+      anchor.target = '_blank'
+      anchor.rel = 'noreferrer'
       return anchor
-    }))
+    })
+
+    editor.replaceChildren(...nodes)
     editor.dataset.empty = text ? 'false' : 'true'
   }, [links])
+
   useLayoutEffect(() => {
-    if (!focusedRef.current && !dirtyRef.current) renderText(value || '')
+    const isFocused = document.activeElement === editorRef.current
+    if (!isFocused && !dirtyRef.current) renderText(value || '')
   }, [value, renderText])
-  useLayoutEffect(() => { if (autoFocus) editorRef.current?.focus() }, [])
-  return <div
-    ref={editorRef}
-    className={className}
-    contentEditable="plaintext-only"
-    role="textbox"
-    tabIndex={0}
-    aria-label={label}
-    aria-multiline="true"
-    data-placeholder={placeholder}
-    data-modal-inline-editor
-    spellCheck
-    onFocus={() => { focusedRef.current = true }}
-    onInput={event => { dirtyRef.current = true; event.currentTarget.dataset.empty = event.currentTarget.innerText ? 'false' : 'true' }}
-    onBlur={event => {
-      focusedRef.current = false
-      const next = event.currentTarget.innerText.replace(/\r\n?/g, '\n')
-      if (dirtyRef.current && next !== latest.current) {
-        const accepted = onCommit(next)
-        if (accepted === false) return
-        renderText(accepted ?? next)
-      } else renderText(latest.current)
-      dirtyRef.current = false
-    }}
-    onKeyDown={event => {
-      if (event.key === 'Escape' && !event.isComposing && !event.nativeEvent.isComposing) {
-        event.preventDefault(); event.stopPropagation()
-        dirtyRef.current = false; renderText(latest.current); onCancel?.()
-      }
-    }}
-    onClick={event => {
-      const anchor = event.target.closest('a')
-      if (anchor) { event.preventDefault(); event.stopPropagation(); window.open(anchor.href, '_blank', 'noopener,noreferrer') }
-    }}
-  />
+
+  useLayoutEffect(() => {
+    if (autoFocus) editorRef.current?.focus()
+  }, [])
+
+  const commitOnBlur = event => {
+    const text = event.currentTarget.innerText.replace(/\r\n?/g, '\n')
+    if (dirtyRef.current && text !== latestValueRef.current) {
+      const acceptedText = onCommit(text)
+      if (acceptedText === false) return
+      renderText(acceptedText ?? text)
+    } else {
+      renderText(latestValueRef.current)
+    }
+    dirtyRef.current = false
+  }
+
+  const cancelOnEscape = event => {
+    if (event.key !== 'Escape' || event.isComposing || event.nativeEvent.isComposing) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    dirtyRef.current = false
+    renderText(latestValueRef.current)
+    onCancel?.()
+  }
+
+  const openLink = event => {
+    const anchor = event.target.closest('a')
+    if (!anchor) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    window.open(anchor.href, '_blank', 'noopener,noreferrer')
+  }
+
+  return (
+    <div
+      ref={editorRef}
+      className={className}
+      contentEditable="plaintext-only"
+      role="textbox"
+      tabIndex={0}
+      aria-label={label}
+      aria-multiline="true"
+      data-placeholder={placeholder}
+      data-modal-inline-editor
+      spellCheck
+      onInput={event => {
+        dirtyRef.current = true
+        event.currentTarget.dataset.empty = event.currentTarget.innerText ? 'false' : 'true'
+      }}
+      onBlur={commitOnBlur}
+      onKeyDown={cancelOnEscape}
+      onClick={openLink}
+    />
+  )
 }
 
 function pullRequestLabel(url) {
@@ -572,52 +639,93 @@ function PullRequestReferences({ card, canWrite, online, statuses, onUpdate, onR
 }
 
 function CardTitleEditor({ card, canWrite, onCommit, onCancel }) {
-  if (!canWrite) return <div className="kb-detail-field kb-title-field"><div className="kb-title-display">{card.title}</div></div>
-  return <div className="kb-detail-field kb-title-field"><InlineCardText
-    key={card.id}
-    className="kb-title-display kb-editable-field"
-    value={card.title}
-    autoFocus={!card.title}
-    placeholder="Card title…"
-    label="Card title"
-    onCommit={value => {
-      const next = value.trim()
-      // Blank existing titles are rejected; untitled drafts remain unpersisted.
-      if (!next) return card.title || ''
-      if (next !== card.title && onCommit(next) === false) return false
-      return next
-    }}
-    onCancel={() => { if (!card.title) onCancel?.() }}
-  /></div>
+  const commitTitle = value => {
+    const title = value.trim()
+    // Blank existing titles are rejected; untitled drafts remain unpersisted.
+    if (!title) return card.title || ''
+    if (title !== card.title && onCommit(title) === false) return false
+    return title
+  }
+
+  return (
+    <div className="kb-detail-field kb-title-field">
+      {canWrite ? (
+        <InlineCardText
+          key={card.id}
+          className="kb-title-display kb-editable-field"
+          value={card.title}
+          autoFocus={!card.title}
+          placeholder="Card title…"
+          label="Card title"
+          onCommit={commitTitle}
+          onCancel={() => {
+            if (!card.title) onCancel?.()
+          }}
+        />
+      ) : (
+        <div className="kb-title-display">{card.title}</div>
+      )}
+    </div>
+  )
 }
 
 function CardNotesEditor({ card, canWrite, onCommit }) {
-  return <div className="kb-detail-field kb-notes-field">
-    {canWrite ? <InlineCardText
-      key={card.id}
-      className="kb-notes-display kb-editable-field"
-      value={card.notes}
-      placeholder="Notes…"
-      label="Card notes"
-      links
-      onCommit={value => { if (value !== card.notes && onCommit(value) === false) return false; return value }}
-    /> : <div className={`kb-notes-display${card.notes ? '' : ' kb-notes-empty'}`}>
-      {card.notes ? <LinkifiedText text={card.notes} /> : 'Notes…'}
-    </div>}
-  </div>
+  const commitNotes = notes => {
+    if (onCommit(notes) === false) return false
+    return notes
+  }
+
+  return (
+    <div className="kb-detail-field kb-notes-field">
+      {canWrite ? (
+        <InlineCardText
+          key={card.id}
+          className="kb-notes-display kb-editable-field"
+          value={card.notes}
+          placeholder="Notes…"
+          label="Card notes"
+          links
+          onCommit={commitNotes}
+        />
+      ) : (
+        <div className={`kb-notes-display${card.notes ? '' : ' kb-notes-empty'}`}>
+          {card.notes ? <LinkifiedText text={card.notes} /> : 'Notes…'}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function ChecklistEditor({ checklist, canWrite, onAdd, onToggle, onDelete, onEdit }) {
-  const [text, setText] = useState('')
-  const [editingId, setEditingId] = useState(null)
-  const [editingText, setEditingText] = useState('')
-  const submit = () => {
-    const value = text.trim()
-    if (!value || !canWrite) return
-    onAdd(value)
-    setText('')
+  const [newItemText, setNewItemText] = useState('')
+  const [editingItem, setEditingItem] = useState(null)
+
+  const addItem = () => {
+    const text = newItemText.trim()
+    if (!text || !canWrite) return
+    onAdd(text)
+    setNewItemText('')
   }
+
+  const saveItem = item => {
+    const text = editingItem.text.trim()
+    if (text && text !== item.text) onEdit(item.id, text)
+    setEditingItem(null)
+  }
+
+  const handleEditKey = event => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      setEditingItem(null)
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      event.currentTarget.blur()
+    }
+  }
+
   if (!checklist.length && !canWrite) return null
+
   return (
     <div className="kb-checklist">
       {checklist.map(item => (
@@ -630,28 +738,60 @@ function ChecklistEditor({ checklist, canWrite, onAdd, onToggle, onDelete, onEdi
               disabled={!canWrite}
               onChange={() => onToggle(item.id)}
             />
-            {editingId === item.id ? <input className="kb-input kb-check-edit" data-modal-inline-editor value={editingText} aria-label={`Edit checklist item ${item.text}`} autoFocus onChange={event => setEditingText(event.target.value)} onBlur={() => { const value = editingText.trim(); if (value && value !== item.text) onEdit(item.id, value); setEditingId(null) }} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setEditingId(null); return } if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } }} /> : <button type="button" className={`kb-check-text ${item.done ? 'kb-check-done' : ''}`} onClick={() => { if (canWrite) { setEditingId(item.id); setEditingText(item.text) } }}>{item.text}</button>}
+            {editingItem?.id === item.id ? (
+              <input
+                className="kb-input kb-check-edit"
+                data-modal-inline-editor
+                value={editingItem.text}
+                aria-label={`Edit checklist item ${item.text}`}
+                autoFocus
+                onChange={event => setEditingItem({ id: item.id, text: event.target.value })}
+                onBlur={() => saveItem(item)}
+                onKeyDown={handleEditKey}
+              />
+            ) : (
+              <button
+                type="button"
+                className={`kb-check-text ${item.done ? 'kb-check-done' : ''}`}
+                onClick={() => {
+                  if (canWrite) setEditingItem({ id: item.id, text: item.text })
+                }}
+              >
+                {item.text}
+              </button>
+            )}
           </div>
-          {canWrite && <button
-            className="kb-iconbtn"
-            aria-label={`Delete checklist item ${item.text}`}
-            onClick={() => onDelete(item.id)}
-          >
-            <Trash />
-          </button>}
+          {canWrite && (
+            <button
+              className="kb-iconbtn"
+              aria-label={`Delete checklist item ${item.text}`}
+              onClick={() => onDelete(item.id)}
+            >
+              <Trash />
+            </button>
+          )}
         </div>
       ))}
-      {canWrite && <div className="kb-check-add">
-        <input
-          className="kb-input"
-          value={text}
-          placeholder="Add checklist item…"
-          aria-label="New checklist item"
-          onChange={event => setText(event.target.value)}
-          onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); submit() } }}
-        />
-        <button className="kb-btn kb-btn-primary" disabled={!text.trim()} onClick={submit}>Add</button>
-      </div>}
+      {canWrite && (
+        <div className="kb-check-add">
+          <input
+            className="kb-input"
+            value={newItemText}
+            placeholder="Add checklist item…"
+            aria-label="New checklist item"
+            onChange={event => setNewItemText(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                addItem()
+              }
+            }}
+          />
+          <button className="kb-btn kb-btn-primary" disabled={!newItemText.trim()} onClick={addItem}>
+            Add
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -927,7 +1067,11 @@ export default function Board({
 
   const avatarHostsKey = JSON.stringify((members || [])
     .filter(member => !member.pending && member.host)
-    .map(member => [member.host, (member.hosts || [member.host]).includes(localDeploymentHost) ? localDeploymentHost : member.host])
+    .map(member => {
+      const isLocalAccount = (member.hosts || [member.host]).includes(localDeploymentHost)
+      const avatarHost = isLocalAccount ? localDeploymentHost : member.host
+      return [member.host, avatarHost]
+    })
     .sort(([a], [b]) => a.localeCompare(b)))
   useEffect(() => {
     const controller = new AbortController()
@@ -937,8 +1081,12 @@ export default function Board({
     const worker = async () => {
       while (cursor < hosts.length && !controller.signal.aborted) {
         const [host, avatarHost] = hosts[cursor++]
-        const avatar = await loadMemberAvatar(avatarHost, localDeploymentHost, token, fetch, controller.signal)
-        if (!controller.signal.aborted) setMemberAvatars(previous => ({ ...previous, [host]: avatar }))
+        const avatar = await loadMemberAvatar(
+          avatarHost, localDeploymentHost, token, fetch, controller.signal,
+        )
+        if (!controller.signal.aborted) {
+          setMemberAvatars(previous => ({ ...previous, [host]: avatar }))
+        }
       }
     }
     Promise.all(Array.from({ length: Math.min(4, hosts.length) }, worker))
@@ -1974,7 +2122,14 @@ export default function Board({
             }} onCancel={() => { if (isDraftCard) { setDraftCard(null); setOpenCardId(null) } }} />
             <CardNotesEditor card={openCard_} canWrite={access.canWrite} onCommit={notes => updateCard(openCard_.id, { notes })} />
 
-            <ChecklistEditor checklist={Array.isArray(openCard_.checklist) ? openCard_.checklist : []} canWrite={access.canWrite} onAdd={text => addCheckItem(openCard_.id, text)} onToggle={itemId => toggleCheckItem(openCard_.id, itemId)} onDelete={itemId => removeCheckItem(openCard_.id, itemId)} onEdit={(itemId, text) => editCheckItem(openCard_.id, itemId, text)} />
+            <ChecklistEditor
+              checklist={Array.isArray(openCard_.checklist) ? openCard_.checklist : []}
+              canWrite={access.canWrite}
+              onAdd={text => addCheckItem(openCard_.id, text)}
+              onToggle={itemId => toggleCheckItem(openCard_.id, itemId)}
+              onDelete={itemId => removeCheckItem(openCard_.id, itemId)}
+              onEdit={(itemId, text) => editCheckItem(openCard_.id, itemId, text)}
+            />
 
             {(access.canWrite || !!openCard_.attachments?.length) && <section className="kb-attachments" aria-label="Attachments">
               {!!openCard_.attachments?.some(isPreviewImage) && <div className="kb-image-grid">
