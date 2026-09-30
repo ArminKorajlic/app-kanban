@@ -107,8 +107,8 @@ try {
   `)
   await new Promise(resolve => setTimeout(resolve, 40))
   await checkControls({ evaluate, call, pageSession })
-  await checkChecklist({ evaluate, call, pageSession })
-  await checkEditing({ evaluate, call, pageSession })
+  await checkChecklist({ evaluate })
+  await checkEditing({ evaluate })
 } finally {
   socket.close()
 }
@@ -240,7 +240,7 @@ async function checkControls({ evaluate, call, pageSession }) {
   assert.ok(await evaluate(`!!document.querySelector('.kb-assignee-trigger .kb-avatar-photo')`))
 }
 
-async function checkEditing({ evaluate, call, pageSession }) {
+async function checkEditing({ evaluate }) {
   const wait = () => new Promise(resolve => setTimeout(resolve, 40))
   const state = () => evaluate('window.__cardEditing')
   const focusDone = () => evaluate(`document.querySelector('.kb-card-toolbar-done').focus()`)
@@ -316,7 +316,7 @@ async function checkEditing({ evaluate, call, pageSession }) {
   await focusDone()
 }
 
-async function checkChecklist({ evaluate, call, pageSession }) {
+async function checkChecklist({ evaluate }) {
   const wait = () => new Promise(resolve => setTimeout(resolve, 40))
   const state = () => evaluate('window.__cardEditing')
   async function openItem(index = 0) {
