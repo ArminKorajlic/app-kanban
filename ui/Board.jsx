@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, ChevronLeft, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, Reload, Share, Trash, User } from '@openai/apps-sdk-ui/components/Icon'
 import { uid, subscribeBoard, getBoard, boardPath, normalizeBoard } from '../storage.js'
-import { resolveMemberHandles, pullShared, createInvite, inviteByHandle, getMembers, revokeCollaborator, groupCollaborators, collaboratorForHost, selfCollaborator, inviteDeliveryNotice, shareBoard, cacheSubscriptionIsAuthoritative, rememberSharedState, sharedBoardPollDelay, acceptSharedPoll, createSharedRefreshLifecycle } from '../sync.js'
+import { loadMemberAvatar, resolveMemberHandles, pullShared, createInvite, inviteByHandle, getMembers, revokeCollaborator, groupCollaborators, collaboratorForHost, selfCollaborator, inviteDeliveryNotice, shareBoard, cacheSubscriptionIsAuthoritative, rememberSharedState, sharedBoardPollDelay, acceptSharedPoll, createSharedRefreshLifecycle } from '../sync.js'
 import { applyBoardOp, columnMoveAnchor, cardPullUrls } from '../operations.js'
 import { parsePullRequestUrl, pullRequestStatus } from '../prMatching.js'
 import { acknowledgeRecoveredBoardOps, applyPendingBoardOps, enqueuePendingBoardOp, readPendingBoardOps, readRecoveredBoardOps, exportUnsyncedBoardOps, replayPendingBoardOps, hasRecoverableBoardOps } from '../pendingOps.js'
@@ -54,7 +54,7 @@ function AttachmentImage({ boardId, share, attachment, className, alt = '' }) {
   return <img className={className} src={src} alt={alt} />
 }
 
-function Card({ boardId, share, card, assigneeLabel, lifted, onOpen, onDragStart, canWrite }) {
+function Card({ boardId, share, card, assigneeLabel, assigneeMember, lifted, onOpen, onDragStart, canWrite }) {
   const dueStatus = dueDateStatus(card.due)
   const progress = checklistProgress(card.checklist)
   const assignee = (assigneeLabel ?? card.assignee)?.trim()
@@ -108,13 +108,7 @@ function Card({ boardId, share, card, assigneeLabel, lifted, onOpen, onDragStart
           </span>
         </div>}
         <span className="kb-card-meta-spacer" />
-        {avatar && <span
-          className="kb-avatar"
-          style={{ background: avatar.background, color: avatar.color }}
-          title={assignee}
-          role="img"
-          aria-label={`Assigned to ${assignee}`}
-        >{avatar.initials}</span>}
+        {avatar && <MemberAvatar member={assigneeMember || { name: assignee }} className="kb-avatar" presence={false} />}
       </div>}
     </div>
   )
@@ -156,17 +150,22 @@ function memberLabel(member) {
   return String(member?.name || member?.host || '').trim()
 }
 
-function MemberAvatar({ member, small = false }) {
+function MemberAvatar({ member, small = false, className = '', presence = true }) {
   const label = memberLabel(member) || 'Board member'
   const avatar = assigneeAvatar(label)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => { setFailed(false) }, [member.avatar])
   return <span
-    className={`kb-member-avatar${small ? ' kb-member-avatar-small' : ''}`}
-    style={{ background: avatar.background, color: avatar.color }}
+    className={`kb-member-avatar${small ? ' kb-member-avatar-small' : ''} ${className}`}
+    style={{ background: member.avatar && !failed ? 'transparent' : avatar.background, color: avatar.color }}
     title={label}
+    role="img"
     aria-label={label}
   >
-    {avatar.initials}
-    {member.active && <span className="kb-presence-dot" aria-label="Active now" />}
+    {member.avatar && !failed
+      ? <img className="kb-avatar-photo" src={member.avatar} alt="" onError={() => setFailed(true)} />
+      : avatar.initials}
+    {presence && member.active && <span className="kb-presence-dot" aria-label="Active now" />}
   </span>
 }
 
@@ -338,7 +337,7 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = f
         onClick={() => canWrite && togglePicker()}
       >
         {selectedAvatar
-          ? <span className="kb-assignee-avatar" style={{ background: selectedAvatar.background, color: selectedAvatar.color }}>{selectedAvatar.initials}</span>
+          ? <MemberAvatar member={selectedMember || { name: selectedLabel }} className="kb-assignee-avatar" presence={false} />
           : <span className="kb-assignee-avatar kb-assignee-avatar-empty"><User aria-hidden="true" /></span>}
         {!iconOnly && <span className={`kb-assignee-trigger-label${selectedLabel ? '' : ' is-empty'}`}>{selectedLabel || 'Unassigned'}</span>}
         {canWrite && !iconOnly && <ChevronDown aria-hidden="true" />}
@@ -368,7 +367,7 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = f
           </label>
           <div className="kb-assignee-options" role="group" aria-label="Assignee options">
             {(!share || selfMember) && <button type="button" className="kb-assignee-option kb-assignee-me" onClick={chooseMe}>
-              <span className="kb-assignee-option-icon"><User aria-hidden="true" /></span>
+              {selfMember ? <MemberAvatar member={selfMember} small presence={false} /> : <span className="kb-assignee-option-icon"><User aria-hidden="true" /></span>}
               <span className="kb-assignee-option-copy"><strong>Assign to me</strong><small>{selfMember ? memberLabel(selfMember) : 'Me'}</small></span>
               {selectedLabel === (selfMember ? memberLabel(selfMember) : 'Me') && <Check aria-hidden="true" />}
             </button>}
@@ -414,7 +413,8 @@ function LabelPicker({ label, canWrite, onChange }) {
   return <div className="kb-label-picker" ref={rootRef}>
     <button
       type="button"
-      className="kb-label-trigger kb-icon-trigger"
+      className={`kb-label-trigger kb-icon-trigger${current === 'none' ? ' kb-color-empty' : ''}`}
+      style={current === 'none' ? undefined : { background: LABELS[current], borderColor: LABELS[current] }}
       aria-label={current === 'none' ? 'Choose label' : `Label: ${current}`}
       title={current === 'none' ? 'No label' : `Label: ${current}`}
       aria-haspopup="dialog"
@@ -422,7 +422,7 @@ function LabelPicker({ label, canWrite, onChange }) {
       disabled={!canWrite}
       onClick={() => setOpen(value => !value)}
     >
-      <span className={`kb-property-dot${current === 'none' ? ' kb-label-dot-empty' : ''}`} style={current === 'none' ? undefined : { background: LABELS[current] }} />
+      <span className="kb-property-dot" aria-hidden="true" />
     </button>
     {open && <div ref={menuRef} className="kb-label-menu" role="dialog" aria-label="Choose label">
       <div className="kb-swatches">
@@ -442,47 +442,84 @@ function LabelPicker({ label, canWrite, onChange }) {
   </div>
 }
 
-function AutoGrowTextarea({ valueKey, onCommit, onCancel, ...props }) {
-  const textareaRef = useRef(null)
-  const resize = useCallback(() => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-    textarea.style.height = 'auto'
-    textarea.style.height = `${textarea.scrollHeight}px`
-  }, [])
-
-  useLayoutEffect(() => { resize() }, [resize, valueKey])
-
-  return <textarea
-    {...props}
-    ref={textareaRef}
-    data-modal-inline-editor
-    onInput={resize}
-    onFocus={resize}
-    onKeyDown={event => {
-      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); event.currentTarget.value = props.defaultValue || ''; onCancel?.(); }
-    }}
-    onBlur={event => {
-      onCommit?.(event.target.value)
-    }}
-  />
+function linkifiedParts(text) {
+  return String(text || '').split(/(https?:\/\/[^\s<]+)/gu).flatMap(part => {
+    if (!/^https?:\/\//u.test(part)) return [{ text: part }]
+    const match = part.match(/^(.*?)([.,!?;:]+)?$/u)
+    const url = match?.[1] || part
+    try {
+      const parsed = new URL(url)
+      if (!['http:', 'https:'].includes(parsed.protocol)) return [{ text: part }]
+      return [{ text: url, href: parsed.href }, { text: match?.[2] || '' }]
+    } catch { return [{ text: part }] }
+  })
 }
 
 function LinkifiedText({ text }) {
-  const parts = String(text || '').split(/(https?:\/\/[^\s<]+)/gu)
-  return parts.map((part, index) => {
-    if (!/^https?:\/\//u.test(part)) return part
-    const match = part.match(/^(.*?)([.,!?;:]+)?$/u)
-    const url = match?.[1] || part
-    const punctuation = match?.[2] || ''
-    try {
-      const parsed = new URL(url)
-      if (!['http:', 'https:'].includes(parsed.protocol)) return part
-      return <span key={`${url}-${index}`}><a href={parsed.href} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>{url}</a>{punctuation}</span>
-    } catch {
-      return part
-    }
-  })
+  return linkifiedParts(text).map((part, index) => part.href
+    ? <a key={index} href={part.href} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>{part.text}</a>
+    : part.text)
+}
+
+// React owns the editor shell, not its text nodes. The browser owns selection,
+// typing, plain-text paste, composition and undo without replacing the clicked
+// surface. Incoming polls update idle editors, never the focused draft/caret.
+function InlineCardText({ value, className, label, placeholder, autoFocus = false, links = false, onCommit, onCancel }) {
+  const editorRef = useRef(null)
+  const dirtyRef = useRef(false)
+  const focusedRef = useRef(false)
+  const latest = useRef(value || '')
+  latest.current = value || ''
+  const renderText = useCallback(text => {
+    const editor = editorRef.current
+    if (!editor) return
+    editor.replaceChildren(...(links ? linkifiedParts(text) : [{ text }]).map(part => {
+      if (!part.href) return document.createTextNode(part.text)
+      const anchor = document.createElement('a')
+      anchor.textContent = part.text; anchor.href = part.href
+      anchor.target = '_blank'; anchor.rel = 'noreferrer'
+      return anchor
+    }))
+    editor.dataset.empty = text ? 'false' : 'true'
+  }, [links])
+  useLayoutEffect(() => {
+    if (!focusedRef.current) renderText(value || '')
+  }, [value, renderText])
+  useLayoutEffect(() => { if (autoFocus) editorRef.current?.focus() }, [])
+  return <div
+    ref={editorRef}
+    className={className}
+    contentEditable="plaintext-only"
+    role="textbox"
+    tabIndex={0}
+    aria-label={label}
+    aria-multiline="true"
+    data-placeholder={placeholder}
+    data-modal-inline-editor
+    spellCheck
+    onFocus={() => { focusedRef.current = true }}
+    onInput={event => { dirtyRef.current = true; event.currentTarget.dataset.empty = event.currentTarget.innerText ? 'false' : 'true' }}
+    onBlur={event => {
+      focusedRef.current = false
+      const next = event.currentTarget.innerText.replace(/\r\n?/g, '\n')
+      if (dirtyRef.current && next !== latest.current) {
+        const accepted = onCommit(next)
+        if (accepted === false) return
+        renderText(accepted ?? next)
+      } else renderText(latest.current)
+      dirtyRef.current = false
+    }}
+    onKeyDown={event => {
+      if (event.key === 'Escape' && !event.isComposing && !event.nativeEvent.isComposing) {
+        event.preventDefault(); event.stopPropagation()
+        dirtyRef.current = false; renderText(latest.current); onCancel?.()
+      }
+    }}
+    onClick={event => {
+      const anchor = event.target.closest('a')
+      if (anchor) { event.preventDefault(); event.stopPropagation(); window.open(anchor.href, '_blank', 'noopener,noreferrer') }
+    }}
+  />
 }
 
 function pullRequestLabel(url) {
@@ -541,61 +578,39 @@ function PullRequestReferences({ card, canWrite, online, statuses, onUpdate, onR
 }
 
 function CardTitleEditor({ card, canWrite, onCommit, onCancel }) {
-  const [editing, setEditing] = useState(!card.title)
-  useEffect(() => { setEditing(!card.title) }, [card.id])
-  if (!editing || !canWrite) return <div className="kb-detail-field kb-title-field">
-    {canWrite
-      ? <button type="button" className="kb-title-display kb-editable-field" onClick={() => setEditing(true)} aria-label="Edit card title">{card.title}</button>
-      : <div className="kb-title-display">{card.title}</div>}
-  </div>
-  return <AutoGrowTextarea
-    className="kb-input kb-title-input"
-    rows={1}
-    autoFocus
+  if (!canWrite) return <div className="kb-detail-field kb-title-field"><div className="kb-title-display">{card.title}</div></div>
+  return <div className="kb-detail-field kb-title-field"><InlineCardText
+    key={card.id}
+    className="kb-title-display kb-editable-field"
+    value={card.title}
+    autoFocus={!card.title}
     placeholder="Card title…"
-    defaultValue={card.title}
-    key={`st-${card.id}`}
-    valueKey={`${card.id}:${card.title}`}
-    aria-label="Card title"
+    label="Card title"
     onCommit={value => {
       const next = value.trim()
-      // An untitled draft stays open on blur so the header's label and
-      // assignee controls can be used first; Done or Escape discards it.
-      if (!next) {
-        if (card.title) setEditing(false)
-        return
-      }
-      if (next !== card.title && onCommit(next) === false) return
-      setEditing(false)
+      // Blank existing titles are rejected; untitled drafts remain unpersisted.
+      if (!next) return card.title || ''
+      if (next !== card.title && onCommit(next) === false) return false
+      return next
     }}
-    onCancel={() => { if (!card.title) onCancel?.(); else setEditing(false) }}
-  />
+    onCancel={() => { if (!card.title) onCancel?.() }}
+  /></div>
 }
 
 function CardNotesEditor({ card, canWrite, onCommit }) {
-  const [editing, setEditing] = useState(false)
-  useEffect(() => { setEditing(false) }, [card.id])
-  if (!editing || !canWrite) return <div className="kb-detail-field kb-notes-field">
-    <div className={`kb-notes-display${card.notes ? '' : ' kb-notes-empty'}`}>
+  return <div className="kb-detail-field kb-notes-field">
+    {canWrite ? <InlineCardText
+      key={card.id}
+      className="kb-notes-display kb-editable-field"
+      value={card.notes}
+      placeholder="Notes…"
+      label="Card notes"
+      links
+      onCommit={value => { if (value !== card.notes && onCommit(value) === false) return false; return value }}
+    /> : <div className={`kb-notes-display${card.notes ? '' : ' kb-notes-empty'}`}>
       {card.notes ? <LinkifiedText text={card.notes} /> : 'Notes…'}
-    </div>
-    {canWrite && <button type="button" className="kb-notes-edit-hit" aria-label={card.notes ? 'Edit card notes' : 'Add card notes'} onClick={() => setEditing(true)} />}
+    </div>}
   </div>
-  return <AutoGrowTextarea
-    className="kb-input kb-notes-input"
-    rows={2}
-    autoFocus
-    placeholder="Notes…"
-    defaultValue={card.notes}
-    key={`sn-${card.id}`}
-    valueKey={`${card.id}:${card.notes}`}
-    aria-label="Card notes"
-    onCommit={value => {
-      if (value !== card.notes) onCommit(value)
-      setEditing(false)
-    }}
-    onCancel={() => setEditing(false)}
-  />
 }
 
 function ChecklistEditor({ checklist, canWrite, onAdd, onToggle, onDelete, onEdit }) {
@@ -844,6 +859,7 @@ export default function Board({
   const [members, setMembers] = useState(null)
   const [identity, setIdentity] = useState(null)
   const [verifiedHandles, setVerifiedHandles] = useState({})
+  const [memberAvatars, setMemberAvatars] = useState({})
   const [animateColumns, setAnimateColumns] = useState(true)
   const [queuedCount, setQueuedCount] = useState(0)
   const [recoveredCount, setRecoveredCount] = useState(0)
@@ -915,7 +931,26 @@ export default function Board({
     return () => controller.abort()
   }, [profileHostsKey, token])
 
-  const displayMembers = (members || []).map(member => {
+  const avatarHostsKey = JSON.stringify([...new Set((members || [])
+    .filter(member => !member.pending).map(member => member.host).filter(Boolean))].sort())
+  useEffect(() => {
+    const controller = new AbortController()
+    const hosts = JSON.parse(avatarHostsKey)
+    // Bound concurrent optional image reads; publish each as it arrives.
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < hosts.length && !controller.signal.aborted) {
+        const host = hosts[cursor++]
+        const avatar = await loadMemberAvatar(host, localDeploymentHost, token, fetch, controller.signal)
+        if (!controller.signal.aborted) setMemberAvatars(previous => ({ ...previous, [host]: avatar }))
+      }
+    }
+    Promise.all(Array.from({ length: Math.min(4, hosts.length) }, worker))
+    return () => controller.abort()
+  }, [avatarHostsKey, localDeploymentHost, token, profile.avatar_url])
+
+  const displayMembers = (members || []).map(record => {
+    const member = { ...record, avatar: memberAvatars[record.host] || '' }
     if (member.host === localDeploymentHost && localDeploymentHost) {
       return { ...member, handle: profileHandle || member.handle, name: profileHandle ? '' : (profileName || member.name) }
     }
@@ -1808,6 +1843,7 @@ export default function Board({
               share={share}
               card={card}
               assigneeLabel={assigneeLabelForCard(card)}
+              assigneeMember={card.assigneeHost ? collaboratorForHost(displayMembers, card.assigneeHost) : displayMembers.find(member => memberLabel(member) === card.assignee)}
               lifted={drag?.cardId === card.id && drag.moved}
               onOpen={openCard}
               onDragStart={startDrag}

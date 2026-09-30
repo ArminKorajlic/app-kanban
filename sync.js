@@ -531,3 +531,22 @@ export async function resolveMemberHandles(hosts, token, request = fetch, signal
   }))
   return verified
 }
+
+// Photos are fetched once per member, never once per card. Identity-bearing
+// hosts come from joined membership; a display name never chooses a photo.
+export async function loadMemberAvatar(host, localHost, token, fetcher = fetch, signal) {
+  if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(host || '')) return ''
+  const url = host === localHost
+    ? '/api/identity/avatar'
+    : `/api/proxy?url=${encodeURIComponent(`https://${host}/api/app-services/social/avatar`)}`
+  try {
+    const response = await fetcher(url, { headers: { Authorization: `Bearer ${token}` }, signal })
+    if (!response.ok) return ''
+    const blob = await response.blob()
+    if (!/^image\/(png|jpeg|webp|gif)$/i.test(blob.type) || !blob.size || blob.size > 2 * 1024 * 1024) return ''
+    const bytes = new Uint8Array(await blob.arrayBuffer())
+    let binary = ''
+    for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+    return `data:${blob.type};base64,${btoa(binary)}`
+  } catch { return '' } // Offline and unpublished profiles retain initials.
+}
