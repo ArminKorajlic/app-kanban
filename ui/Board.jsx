@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, ChevronLeft, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, Reload, Share, Trash, User } from '@openai/apps-sdk-ui/components/Icon'
 import { uid, subscribeBoard, getBoard, boardPath, normalizeBoard } from '../storage.js'
@@ -16,6 +16,7 @@ import {
   saveCardAttachment,
 } from '../attachments.js'
 import { useModalFocus } from './modalFocus.js'
+import { appVisible, onAppVisibilityChange } from '../visibility.js'
 import {
   assigneeAvatar,
   cardAssigneeLabel,
@@ -961,7 +962,13 @@ function ShareSheet({ boardId, share, members, onMembersChange, onRefreshMembers
   )
 }
 
-export default function Board({
+function sameMembers(left, right) {
+  return left === right || JSON.stringify(left) === JSON.stringify(right)
+}
+
+// Memoized: App re-renders on its own state (invitations, online, share map)
+// and a full board render is expensive.
+export default memo(function Board({
   token,
   boardId,
   boards,
@@ -1009,6 +1016,9 @@ export default function Board({
   const dragRef = useRef(null)
   const rectsRef = useRef(null)
   const confirmedSharedRef = useRef(null)
+  // The board object the shared poll last rendered; lets an unchanged poll
+  // skip a full re-render when nothing else has replaced the board since.
+  const pollRenderedRef = useRef(null)
   const availabilityRef = useRef(availability)
   const shareRef = useRef(share)
   const onlineRef = useRef(online)
@@ -1266,7 +1276,7 @@ export default function Board({
     }
     const tick = async () => {
       if (!alive) return
-      if (document.hidden) return
+      if (!appVisible()) return
       if (pulling) {
         schedule()
         return
@@ -1286,15 +1296,20 @@ export default function Board({
               window.mobius?.storage?.set(boardPath(boardId), confirmed.doc).catch(() => {})
             }
             // Even an unchanged poll can reveal a document received while a
-            // drag/write temporarily suppressed rendering.
-            if (pendingRef.current === 0 && !replayingRef.current && !dragRef.current) {
+            // drag/write temporarily suppressed rendering, so only skip when the
+            // board on screen is exactly this poll's earlier render.
+            const unchanged = confirmed === previous
+              && pendingEntriesRef.current.length === 0
+              && boardRef.current === pollRenderedRef.current
+            if (!unchanged && pendingRef.current === 0 && !replayingRef.current && !dragRef.current) {
               const rendered = applyPendingBoardOps(confirmed.doc, pendingEntriesRef.current)
               boardRef.current = rendered
+              pollRenderedRef.current = rendered
               setBoard(rendered)
             }
             if (state.object) {
               const nextMembers = memberRecords(state.object)
-              if (nextMembers) setMembers(nextMembers)
+              if (nextMembers) setMembers(current => sameMembers(current, nextMembers) ? current : nextMembers)
             }
             if (pendingEntriesRef.current.length === 0) setSyncNote('')
             return true
@@ -1306,14 +1321,16 @@ export default function Board({
       }
     }
     tick()
-    const onVis = () => {
-      if (document.hidden || !refresh.shouldContinue()) return
+    // Hidden ticks stop the loop (see tick); becoming visible restarts it at
+    // the fast cadence. This covers the shell hiding the frame as well as tab
+    // visibility.
+    const stopVisibility = onAppVisibilityChange(visible => {
+      if (!visible || !refresh.shouldContinue()) return
       lastInteractionAtRef.current = Date.now()
       clearTimeout(timer)
       tick()
-    }
-    document.addEventListener('visibilitychange', onVis)
-    return () => { alive = false; clearTimeout(timer); document.removeEventListener('visibilitychange', onVis) }
+    })
+    return () => { alive = false; clearTimeout(timer); stopVisibility() }
   }, [share, boardId, loadAttempt, publishAvailability])
 
   const mutate = useCallback((operation, onCommit) => {
@@ -2296,4 +2313,4 @@ export default function Board({
       )}
     </>
   )
-}
+})

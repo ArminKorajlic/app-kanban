@@ -52,7 +52,8 @@
     "collaboration/service.py",
     "collaboration/store.py",
     "collaboration/transport.py",
-    "publication.js"
+    "publication.js",
+    "visibility.js"
   ],
   "store": {
     "tagline": "Boards that open where you left off — and that your friends can join.",
