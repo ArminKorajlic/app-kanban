@@ -2,7 +2,7 @@
 // The storage adapter differs between browser and CLI; board semantics do not.
 import { boardPath, normalizeBoard, casMutate, uid } from './storage.js'
 import { pullShared, pushSharedOp, readSharedCard, writeSharedNotes, appendSharedActivity, cardDetailsUnsupported } from './sync.js'
-import { activityPath, cardSnapshot, createActivityEntries, describeCardChange, mergeActivity, operationCardId } from './activity.js'
+import { MAX_NOTES_CHARS, activityPath, cardSnapshot, createActivityEntries, describeCardChange, mergeActivity, operationCardId } from './activity.js'
 import { PUBLICATION, publicationPending } from './publication.js'
 import { applyBoardOp, completeCardNotes } from './operations.js'
 
@@ -35,6 +35,20 @@ export function replayOutcomeForBoardError(error) {
   return isDiscardableBoardError(error)
     ? { status: 'discarded', error }
     : { status: 'retry' }
+}
+
+// A shared board host's refusals that retrying cannot change become final
+// board errors (a replayed edit goes to recovery instead of blocking the
+// queue). Anything else, such as an unreachable host, stays retryable.
+function finalHostRefusal(error) {
+  switch (error?.code) {
+    case 'read-only':
+    case 'membership-revoked': return boardError('This shared board is read-only.', 'read-only')
+    case 'board-missing': return boardError('Board no longer exists.', 'missing-board')
+    case 'card-missing': return boardError('Card no longer exists.', 'missing-card')
+    case 'notes-too-long': return boardError(error.message, 'notes-too-long')
+    default: return error
+  }
 }
 
 function isRecord(value) {
@@ -124,7 +138,7 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
     let notesChanged = false
     let boardOp = op
     if (entry && touchesNotes(op)) {
-      const current = normalizeBoard((await pullShared(entry, -1, request)).doc)
+      const current = normalizeBoard((await pullShared(entry, -1, request).catch(error => { throw finalHostRefusal(error) })).doc)
       if (!current) throw new Error('Board not found or unavailable.')
       refuseInvalidOperation(current, op)
       const saved = await saveSharedNotesFor(entry, op)
@@ -154,13 +168,7 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
       : entry
         ? await pushSharedOp(entry, apply, onError, request, sharedState)
         : await casMutate(boardId, apply, onError, storage).then(doc => doc && ({ doc }))
-    if (!landed && entry && ['read-only', 'membership-revoked'].includes(error?.code)) {
-      throw boardError('This shared board is read-only.', 'read-only')
-    }
-    if (!landed && entry && error?.code === 'board-missing') {
-      throw boardError('Board no longer exists.', 'missing-board')
-    }
-    if (!landed) throw error || boardError('Board no longer exists.', 'missing-board')
+    if (!landed) throw (entry ? finalHostRefusal(error) : error) || boardError('Board no longer exists.', 'missing-board')
     // Only a confirmed shared write may refresh the offline copy. Cache failure
     // cannot turn a committed operation into a failed operation.
     if (entry) await storage.set(boardPath(boardId), landed.doc).catch(() => {})
@@ -174,12 +182,37 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
       ...(entry ? { host: entry.host, oid: entry.oid } : {}) }
   }
 
+  // Saves `notes` as an edit of the text it started from: `from.version` is
+  // that text's version and `from.text` the text itself (when known). The
+  // host refuses any other version. When the current text is still the
+  // starting text, only our own earlier saves moved the version on (a queued
+  // edit that landed, or a save that finished while this edit was typed), so
+  // the edit applies to the new version. Any other text is someone else's
+  // change and comes back as `status: 'conflict'`.
+  async function writeNotesEdit(entry, cardId, notes, from) {
+    let version = from.version
+    for (let attempt = 0; attempt < 4; attempt++) {
+      let result
+      try {
+        result = await writeSharedNotes(entry, cardId, notes, version, request)
+      } catch (error) {
+        throw finalHostRefusal(error)
+      }
+      if (result.status !== 'conflict') return result
+      if (result.notes === notes) return { status: 'unchanged', notes_version: result.notes_version }
+      if (typeof from.text !== 'string' || result.notes !== from.text) return result
+      version = result.notes_version
+    }
+    throw boardError('The description kept changing while saving; try again.', 'notes-conflict')
+  }
+
   // A completion appends to the newest text, so it may follow the newest
   // version. A replacement text is only safe against the text its author saw:
   // when the board shows just a preview, the edit must name the version it
-  // started from (`notesVersion`). Otherwise an edited preview (an older
-  // Kanban's queued edit, or an agent working from `read` instead of
-  // `read-card`) would replace the whole description.
+  // started from (`notesVersion`, plus `notesBefore` for the card sheet's
+  // queued edits). Otherwise an edited preview (an older Kanban's queued
+  // edit, or an agent working from `read` instead of `read-card`) would
+  // replace the whole description.
   async function saveSharedNotesFor(entry, op) {
     const based = op.type === 'update-card' && Number.isInteger(op.notesVersion)
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -188,7 +221,7 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
         card = await readSharedCard(entry, op.cardId, request)
       } catch (error) {
         if (cardDetailsUnsupported(error)) return null
-        throw error
+        throw finalHostRefusal(error)
       }
       if (typeof card.notes !== 'string') throw boardError('Card no longer exists.', 'missing-card')
       if (op.type === 'update-card' && !based && card.external === true) {
@@ -198,16 +231,21 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
         ? completeCardNotes(card.notes, { summary: op.summary, link: op.link ?? op.prUrl ?? '' })
         : String(op.patch.notes ?? '')
       if (next === card.notes) return false
+      // The host keeps a description from growing past its limit. A completion
+      // that would is still recorded: the card moves and its activity says so.
+      if (op.type === 'complete-card' && next.length > MAX_NOTES_CHARS) return false
+      if (based) {
+        const result = await writeNotesEdit(entry, op.cardId, next, { version: op.notesVersion, text: op.notesBefore })
+        if (result.status === 'conflict') throw boardError('Someone else changed this description first, so this edit was not saved.', 'notes-conflict')
+        return result.status !== 'unchanged'
+      }
       let result
       try {
-        result = await writeSharedNotes(entry, op.cardId, next, based ? op.notesVersion : card.notes_version, request)
+        result = await writeSharedNotes(entry, op.cardId, next, card.notes_version, request)
       } catch (error) {
-        // Retrying cannot shorten the text, so this refusal is final.
-        if (error?.code === 'notes-too-long') throw boardError(error.message, 'notes-too-long')
-        throw error
+        throw finalHostRefusal(error)
       }
       if (result.status !== 'conflict') return true
-      if (based) throw boardError('Someone else changed this description first, so this edit was not saved.', 'notes-conflict')
     }
     throw boardError('The description kept changing while saving; try again.', 'notes-conflict')
   }
@@ -268,24 +306,27 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
     }
   }
 
-  // The card sheet's description save. On a shared board it is checked
-  // against the version the editor started from, so a concurrent edit comes
-  // back as `{ status: 'conflict', notes, notesVersion }` instead of being
-  // overwritten. Private boards and older hosts save through the board.
-  async function saveNotes(boardId, cardId, notes, expectedVersion) {
+  // The card sheet's description save. On a shared board it is an edit of
+  // the text the editor started from (`from`: `{ version, text }`), so a
+  // concurrent edit comes back as `{ status: 'conflict', notes, notesVersion }`
+  // instead of being overwritten. Private boards and older hosts save through
+  // the board. A thrown retryable error means the host could not be reached.
+  async function saveNotes(boardId, cardId, notes, from) {
     const entry = await authority(boardId)
     const throughBoard = async () => ({ status: 'saved', ...(await mutate(boardId, { type: 'update-card', cardId, patch: { notes } })) })
-    if (!entry || !Number.isInteger(expectedVersion)) return throughBoard()
+    if (!entry || !Number.isInteger(from?.version)) return throughBoard()
     if (entry.role !== 'editor') throw boardError('This shared board is read-only.', 'read-only')
     let result
     try {
-      result = await writeSharedNotes(entry, cardId, notes, expectedVersion, request)
+      result = await writeNotesEdit(entry, cardId, notes, from)
     } catch (error) {
       if (cardDetailsUnsupported(error)) return throughBoard()
       throw error
     }
     if (result.status === 'conflict') return { status: 'conflict', notes: result.notes, notesVersion: result.notes_version }
-    const activity = await recordActivity(boardId, entry, { type: 'update-card', cardId }, cardId, [{ type: 'notes' }])
+    const activity = result.status === 'unchanged'
+      ? { cardId, entries: [], status: 'none' }
+      : await recordActivity(boardId, entry, { type: 'update-card', cardId }, cardId, [{ type: 'notes' }])
     return { status: 'saved', card: result.card, notesVersion: result.notes_version, version: result.version, activity }
   }
   return { list, read, mutate, readCard, saveNotes }

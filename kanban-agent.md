@@ -55,7 +55,10 @@ When you finish a task whose exact title matches one Kanban card, use
 request, shared document, booking, or receipt. The command appends
 `✅ Done — <summary>` and the link to that card's notes, then moves it to the
 column named **Done** when that column exists. A GitHub pull request link is
-also added to the card's linked pull requests, so its live status shows there. It refuses to guess when zero or
+also added to the card's linked pull requests, so its live status shows there.
+On a shared board a description cannot grow past 16,000 characters; when the
+completion line would not fit, the card still moves and its activity records
+the completion instead. It refuses to guess when zero or
 multiple card titles match, and it does not duplicate a completion already on
 the card. An unavailable recorded board or a title changed before the fresh
 write also blocks automatic completion. A missing card or ambiguous title is a

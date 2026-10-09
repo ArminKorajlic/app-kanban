@@ -3,8 +3,9 @@ import assert from 'node:assert/strict'
 import { configureSync, pushSharedOp } from '../sync.js'
 import { createBoardRepository } from '../boardRepository.js'
 import { applyBoardOp } from '../operations.js'
+import { readFile } from 'node:fs/promises'
 import {
-  MAX_ACTIVITY_PER_CARD, activityPath, describeActivity, describeCardChange, mergeActivity,
+  MAX_ACTIVITY_PER_CARD, MAX_NOTES_CHARS, activityPath, describeActivity, describeCardChange, mergeActivity,
 } from '../activity.js'
 
 configureSync('fixture', 1)
@@ -82,7 +83,7 @@ test('a private board keeps each card’s activity beside the board, never insid
   assert.equal((await repo.readCard('b', 'c1')).activity[0].to, 'Renamed')
 })
 
-function sharedFixture({ older = false } = {}) {
+function sharedFixture({ older = false, notesRefusal = null } = {}) {
   let version = 1
   let doc = { v: 1, title: 'B', columns: [{ id: 'todo', name: 'To do', cardIds: ['c1'] }], cards: { c1: card({ notes: 'Preview…', notesLength: 900 }) } }
   let notes = 'Full description'.repeat(60)
@@ -105,6 +106,7 @@ function sharedFixture({ older = false } = {}) {
       return Response.json({ protocol: 'kanban/1', code: 'invalid-operation', detail: 'Unsupported board operation.' }, { status: 400 })
     }
     if (url.endsWith('/cards/c1/notes')) {
+      if (notesRefusal) return Response.json({ protocol: 'kanban/1', ...notesRefusal.body }, { status: notesRefusal.status })
       const body = JSON.parse(options.body)
       if (body.expected_version !== notesVersion) return Response.json({ status: 'conflict', notes, notes_version: notesVersion })
       notes = body.notes; notesVersion++; version++
@@ -126,7 +128,7 @@ function sharedFixture({ older = false } = {}) {
     }
     return Response.json({ doc, version })
   }
-  return { storage, request, calls, activity, notes: () => notes, doc: () => doc }
+  return { storage, request, calls, activity, notes: () => notes, doc: () => doc, setNotes: text => { notes = text } }
 }
 
 test('opening a shared card reads its full description and activity in one request', async () => {
@@ -139,7 +141,7 @@ test('opening a shared card reads its full description and activity in one reque
 
 test('a shared description save never resends the board and records one activity line', async () => {
   const f = sharedFixture()
-  const saved = await createBoardRepository(f).saveNotes('b', 'c1', 'New text', 3)
+  const saved = await createBoardRepository(f).saveNotes('b', 'c1', 'New text', { version: 3, text: f.notes() })
   assert.equal(saved.status, 'saved')
   assert.equal(f.notes(), 'New text')
   assert.ok(!f.calls.some(call => call.startsWith('PUT /state')))
@@ -149,7 +151,7 @@ test('a shared description save never resends the board and records one activity
 test('a description changed by someone else comes back as a conflict, not an overwrite', async () => {
   const f = sharedFixture()
   const before = f.notes()
-  const result = await createBoardRepository(f).saveNotes('b', 'c1', 'Mine', 2)
+  const result = await createBoardRepository(f).saveNotes('b', 'c1', 'Mine', { version: 2, text: 'The text I started from' })
   assert.deepEqual(result, { status: 'conflict', notes: before, notesVersion: 3 })
   assert.equal(f.notes(), before)
 })
@@ -168,7 +170,7 @@ test('a host on an older Kanban still saves descriptions through the board', asy
   f.doc().cards.c1 = card({ notes: 'Old inline note' })
   const repo = createBoardRepository(f)
   assert.equal((await repo.readCard('b', 'c1')).status, 'unsupported')
-  const saved = await repo.saveNotes('b', 'c1', 'Edited inline', 0)
+  const saved = await repo.saveNotes('b', 'c1', 'Edited inline', { version: 0, text: 'Old inline note' })
   assert.equal(saved.status, 'saved')
   assert.equal(f.doc().cards.c1.notes, 'Edited inline')
   assert.equal(saved.activity.status, 'unsupported')
@@ -225,4 +227,67 @@ test('a writer adopts the host copy when the host moves a long description out',
   assert.equal(landed.version, 2)
   assert.equal(landed.doc.cards.c1.notesLength, 500)
   assert.equal(landed.doc.cards.c1.notes.length, 400)
+})
+
+test('a description edit still lands when only our own earlier save moved its version on', async () => {
+  const f = sharedFixture()
+  const startedFrom = f.notes()
+  // Version 2 is stale, but the text is still the text this edit started from.
+  const saved = await createBoardRepository(f).saveNotes('b', 'c1', 'Second edit', { version: 2, text: startedFrom })
+  assert.equal(saved.status, 'saved')
+  assert.equal(f.notes(), 'Second edit')
+})
+
+test('a description edit queued while the host was unreachable lands on the text it started from', async () => {
+  const f = sharedFixture()
+  const startedFrom = f.notes()
+  await createBoardRepository(f).mutate('b', {
+    type: 'update-card', cardId: 'c1', patch: { notes: 'Written while offline' }, notesVersion: 2, notesBefore: startedFrom,
+  })
+  assert.equal(f.notes(), 'Written while offline')
+})
+
+test('a queued description edit whose starting text was changed by someone else goes to recovery', async () => {
+  const f = sharedFixture()
+  f.setNotes('Someone else rewrote this')
+  await assert.rejects(
+    createBoardRepository(f).mutate('b', {
+      type: 'update-card', cardId: 'c1', patch: { notes: 'Mine' }, notesVersion: 2, notesBefore: 'The text I started from',
+    }),
+    error => error.code === 'notes-conflict' && error.discardable === true,
+  )
+  assert.equal(f.notes(), 'Someone else rewrote this')
+})
+
+test('a description save refused for good becomes a final error, while an unreachable host stays retryable', async () => {
+  const refused = sharedFixture({ notesRefusal: { status: 403, body: { code: 'read-only', detail: 'This board member is a viewer.' } } })
+  await assert.rejects(
+    createBoardRepository(refused).mutate('b', { type: 'update-card', cardId: 'c1', patch: { notes: 'Mine' }, notesVersion: 3 }),
+    error => error.code === 'read-only' && error.retryable === false && error.discardable === true,
+  )
+  const unreachable = sharedFixture({ notesRefusal: { status: 502, body: { code: 'authority-unavailable', detail: 'Unreachable.' } } })
+  await assert.rejects(
+    createBoardRepository(unreachable).saveNotes('b', 'c1', 'Mine', { version: 3, text: unreachable.notes() }),
+    error => error.code === 'authority-unavailable' && error.retryable !== false,
+  )
+})
+
+test('completing a card whose description is at the shared limit moves it without growing the text', async () => {
+  const f = sharedFixture()
+  f.setNotes('z'.repeat(MAX_NOTES_CHARS + 50))
+  f.doc().columns.push({ id: 'done', name: 'Done', cardIds: [] })
+  await createBoardRepository(f).mutate('b', { type: 'complete-card', cardId: 'c1', expectedTitle: 'Fix login', summary: 'Shipped', link: '' })
+  assert.equal(f.notes().length, MAX_NOTES_CHARS + 50)
+  assert.ok(!f.calls.some(call => call.startsWith('PUT /cards/c1/notes')))
+  assert.deepEqual(f.doc().columns.find(column => column.id === 'done').cardIds, ['c1'])
+  assert.deepEqual(f.activity.map(item => item.type), ['completed'])
+})
+
+test('the card sheet keeps a description it could not send and never clears a conflict on a board refresh', async () => {
+  const source = await readFile(new URL('../ui/Board.jsx', import.meta.url), 'utf8')
+  // An unreachable host queues the edit like any other change instead of dropping it.
+  assert.match(source, /if \(isRetryableBoardError\(error\)\) return await keepForLater\(\)/)
+  // Only opening another card (or choosing) ends a conflict; the details loader keeps it.
+  assert.match(source, /useEffect\(\(\) => \{\s*setNotesConflict\(null\)\s*setNotesError\(''\)\s*\}, \[boardId, openCardId\]\)/)
+  assert.equal(source.match(/setNotesConflict\(null\)/g).length, 3)
 })

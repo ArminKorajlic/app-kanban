@@ -687,12 +687,18 @@ export default function Board({
   const [savedTick, setSavedTick] = useState(0)
   const [collapsedLists, setCollapsedLists] = useState(() => new Set())
   const [columnDrag, setColumnDrag] = useState(null) // { columnId, dx, overIndex }
-  const [notesConflict, setNotesConflict] = useState(null)
+  // A description conflict waits for the owner's choice: a board refresh
+  // never clears it (only opening another card or choosing does). The ref
+  // lets the details loader see it without reloading on every change.
+  const [notesConflict, setNotesConflictState] = useState(null)
+  const notesConflictRef = useRef(null)
+  const setNotesConflict = conflict => {
+    notesConflictRef.current = conflict
+    setNotesConflictState(conflict)
+  }
   const [notesError, setNotesError] = useState('')
-  // The description version the open editor started from (see saveCardNotes),
-  // and this frame's own saves as `${cardId}\0${from}` → to.
+  // The description text and version the open editor started from (see saveCardNotes).
   const notesEditBaseRef = useRef(null)
-  const ownNotesSavesRef = useRef(new Map())
 
   const boardRef = useRef(null)
   const boardScrollRef = useRef(null)
@@ -734,23 +740,43 @@ export default function Board({
   useEffect(() => {
     detailsCacheRef.current = new Map()
     notesEditBaseRef.current = null
-    ownNotesSavesRef.current = new Map()
   }, [boardId])
 
-  // Loads on open and again when the card's description changes on the board
-  // (someone else saved it); a cached copy shows at once in the meantime.
-  const openCardSaved = Boolean(openCardId && board?.cards?.[openCardId])
-  const openCardNotesKey = openCardSaved ? `${board.cards[openCardId].notes}\u0000${board.cards[openCardId].notesLength ?? ''}` : ''
   useEffect(() => {
     setNotesConflict(null)
     setNotesError('')
+  }, [boardId, openCardId])
+
+  // The newest description edit for a card still waiting in the queue.
+  const queuedNotesFor = cardId => pendingEntriesRef.current.findLast(({ op }) => op?.type === 'update-card'
+    && op.cardId === cardId && typeof op.patch?.notes === 'string')?.op.patch.notes
+
+  // Loads on open and again when the card's description changes on the board
+  // (someone else saved it) or a queued edit of it lands; a cached copy shows
+  // at once in the meantime. While a conflict waits for a choice, the sheet
+  // keeps showing the owner's text and the newest saved text becomes "theirs"
+  // for that choice.
+  const openCardSaved = Boolean(openCardId && board?.cards?.[openCardId])
+  const openCardNotesKey = openCardSaved
+    ? `${board.cards[openCardId].notes}\u0000${board.cards[openCardId].notesLength ?? ''}\u0000${queuedNotesFor(openCardId) ?? ''}`
+    : ''
+  useEffect(() => {
     if (!openCardSaved) { showDetails(null); return undefined }
     let alive = true
     const cardId = openCardId
     const cached = detailsCacheRef.current.get(cardId)
     if (cardDetailsRef.current?.cardId !== cardId) showDetails(cached || { cardId, status: 'loading', notes: null, notesVersion: null, activity: [] })
     createBoardRepository({ storage: window.mobius.storage }).readCard(boardId, cardId)
-      .then(details => { if (alive) showDetails({ cardId, ...details }) })
+      .then(details => {
+        if (!alive) return
+        const conflict = notesConflictRef.current
+        if (conflict?.cardId === cardId && typeof details.notes === 'string') {
+          setNotesConflict({ ...conflict, theirs: details.notes, notesVersion: details.notesVersion })
+          updateDetails(cardId, current => ({ ...current, activity: details.activity }))
+          return
+        }
+        showDetails({ cardId, ...details })
+      })
       .catch(() => {
         if (alive && cardDetailsRef.current?.cardId === cardId && cardDetailsRef.current.status === 'loading') {
           showDetails({ cardId, status: 'error', notes: null, notesVersion: null, activity: [] })
@@ -1140,6 +1166,16 @@ export default function Board({
     return () => { alive = false; clearTimeout(timer); document.removeEventListener('visibilitychange', onVis) }
   }, [share, boardId, loadAttempt, publishAvailability])
 
+  // Keeps an operation in this board's durable queue; the replay below sends
+  // it once the board's authority answers again. Returns the queue length.
+  const queueOperation = useCallback(async operation => {
+    const queued = await enqueuePendingBoardOp(boardId, operation)
+    pendingEntriesRef.current = [...pendingEntriesRef.current, queued]
+      .sort((left, right) => left.id.localeCompare(right.id))
+    setQueuedCount(pendingEntriesRef.current.length)
+    return pendingEntriesRef.current.length
+  }, [boardId])
+
   const mutate = useCallback((operation, onCommit) => {
     const entry = shareRef.current
     if (availabilityRef.current.kind === 'terminal') return false
@@ -1160,11 +1196,7 @@ export default function Board({
       setBoard(optimistic)
       pendingRef.current += 1
       writeChain.current = writeChain.current.catch(() => {}).then(async () => {
-        const queued = await enqueuePendingBoardOp(boardId, operation)
-        pendingEntriesRef.current = [...pendingEntriesRef.current, queued]
-          .sort((left, right) => left.id.localeCompare(right.id))
-        const count = pendingEntriesRef.current.length
-        setQueuedCount(count)
+        const count = await queueOperation(operation)
         setSyncNote(`${count} change${count === 1 ? '' : 's'} waiting to sync`)
       }).catch(error => {
         boardRef.current = before
@@ -1206,10 +1238,7 @@ export default function Board({
       // The connection can disappear after the click but before durableWrite.
       // Convert that unconfirmed attempt into our own replayable queue.
       try {
-        const queued = await enqueuePendingBoardOp(boardId, operation)
-        pendingEntriesRef.current = [...pendingEntriesRef.current, queued]
-          .sort((left, right) => left.id.localeCompare(right.id))
-        setQueuedCount(pendingEntriesRef.current.length)
+        await queueOperation(operation)
         setSyncNote('Change saved locally — reconnecting')
         settled = optimistic
       } catch (error) {
@@ -1238,7 +1267,7 @@ export default function Board({
       }
     })
     return true
-  }, [boardId])
+  }, [boardId, queueOperation])
 
   // Reconnect replay is serialized with ordinary writes and retains an op until
   // the local or shared authority confirms it landed. The interval also retries
@@ -1330,70 +1359,94 @@ export default function Board({
     return mutateCard({ type: 'update-card', cardId, patch })
   }
 
-  // A shared card's description is saved beside the board, checked against
-  // the version its editor started from, so a concurrent edit becomes a
-  // visible choice instead of a silent overwrite. The start is captured on
-  // focus: the board refreshes while someone types and reloads the details,
-  // so the newest known version would accept any stale text. Drafts, private
-  // boards and hosts without card details save through the board as before.
+  // A shared card's description is saved beside the board as an edit of the
+  // text its editor started from, so a concurrent edit becomes a visible
+  // choice instead of a silent overwrite. The start is captured on focus: the
+  // board refreshes while someone types and reloads the details, so the
+  // newest known version would accept any stale text. When the host cannot be
+  // reached the edit joins the board's queue, carrying that same start, like
+  // any other change. Drafts, private boards and hosts without card details
+  // save through the board as before.
+  // The sheet shows the owner's newest intent: a description edit still
+  // waiting in the queue, else the saved text. A later edit starts from it.
+  const shownNotes = (details, card) => queuedNotesFor(card?.id)
+    ?? (details && typeof details.notes === 'string' ? details.notes : card?.notes || '')
   const beginNotesEdit = cardId => {
     const details = cardDetailsRef.current?.cardId === cardId ? cardDetailsRef.current : null
-    notesEditBaseRef.current = { cardId, version: details?.notesVersion ?? null }
+    notesEditBaseRef.current = { cardId, version: details?.notesVersion ?? null,
+      text: shownNotes(details, boardRef.current?.cards?.[cardId]) }
   }
-  const notesEditBase = cardId => (notesEditBaseRef.current?.cardId === cardId ? notesEditBaseRef.current.version : null)
+  const notesEditBase = cardId => (notesEditBaseRef.current?.cardId === cardId ? notesEditBaseRef.current : null)
 
-  const saveCardNotes = (cardId, notes, baseVersion) => {
+  const saveCardNotes = (cardId, notes, from) => {
     const entry = shareRef.current
     const details = cardDetailsRef.current?.cardId === cardId ? cardDetailsRef.current : null
-    if (!entry || !boardRef.current?.cards?.[cardId] || details?.status !== 'ok') return updateCard(cardId, { notes })
+    if (!entry || !boardRef.current?.cards?.[cardId] || details?.status !== 'ok' || !Number.isInteger(from?.version)) {
+      return updateCard(cardId, { notes })
+    }
     if (!boardAccess(entry, onlineRef.current).canWrite) return false
     setNotesError('')
     setNotesConflict(null)
+    const savedText = details.notes
     updateDetails(cardId, current => ({ ...current, notes }))
+    const operation = { type: 'update-card', cardId, patch: { notes }, notesVersion: from.version, notesBefore: from.text }
+    const keepForLater = async () => {
+      await queueOperation(operation)
+      const queuedBoard = applyBoardOp(structuredClone(boardRef.current), operation) || boardRef.current
+      boardRef.current = queuedBoard
+      setBoard(queuedBoard)
+      setSyncNote('Change saved locally — reconnecting')
+    }
+    const refuse = message => {
+      updateDetails(cardId, current => (current.notes === notes ? { ...current, notes: savedText } : current))
+      setNotesError(message)
+    }
     writeChain.current = writeChain.current.catch(() => {}).then(async () => {
+      let result
       try {
-        // An own save that landed after this edit began moved the version on
-        // without changing the text the editor showed, so follow it.
-        const own = ownNotesSavesRef.current
-        let expected = baseVersion
-        while (Number.isInteger(expected) && own.has(`${cardId}\u0000${expected}`)) expected = own.get(`${cardId}\u0000${expected}`)
-        const result = await createBoardRepository({ storage: window.mobius.storage }).saveNotes(boardId, cardId, notes, expected)
-        if (result.status === 'conflict') {
-          setNotesConflict({ cardId, mine: notes, theirs: result.notes, notesVersion: result.notesVersion })
-          return
+        // Behind queued changes, the description waits its turn like any edit.
+        if (pendingEntriesRef.current.length) return await keepForLater()
+        try {
+          result = await createBoardRepository({ storage: window.mobius.storage }).saveNotes(boardId, cardId, notes, from)
+        } catch (error) {
+          window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'save-description' })
+          if (isRetryableBoardError(error)) return await keepForLater()
+          // Too long: the text stays in the editor so it can be shortened and saved.
+          if (error?.code === 'notes-too-long') {
+            return setNotesError(`A description can be at most ${MAX_NOTES_CHARS.toLocaleString()} characters. Put longer text in an attachment.`)
+          }
+          return refuse(String(error?.message || 'The description could not be saved.'))
         }
-        if (Number.isInteger(expected) && Number.isInteger(result.notesVersion) && result.notesVersion > expected) {
-          own.set(`${cardId}\u0000${expected}`, result.notesVersion)
-        }
-        if (Number.isInteger(result.notesVersion)) updateDetails(cardId, current => ({ ...current, notesVersion: result.notesVersion }))
-        noteActivity(result.activity)
-        const card = boardRef.current?.cards?.[cardId]
-        if (result.card && card) {
-          const next = structuredClone(boardRef.current)
-          const { notesLength, ...rest } = next.cards[cardId]
-          next.cards[cardId] = { ...rest, notes: result.card.notes, ...(Number.isInteger(result.card.notesLength) ? { notesLength: result.card.notesLength } : {}) }
-          boardRef.current = next
-          setBoard(next)
-        }
-        setSavedTick(tick => tick + 1)
       } catch (error) {
-        setNotesError(error?.code === 'notes-too-long'
-          ? `A description can be at most ${MAX_NOTES_CHARS.toLocaleString()} characters. Put longer text in an attachment.`
-          : error?.retryable === false ? String(error.message)
-            : 'The description wasn’t saved. Check your connection and try again.')
-        window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'save-description' })
+        window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'offline-queue' })
+        return refuse(`The description wasn’t saved: ${String(error?.message || error)}`)
       }
+      if (result.status === 'conflict') {
+        setNotesConflict({ cardId, mine: notes, theirs: result.notes, notesVersion: result.notesVersion })
+        return
+      }
+      if (Number.isInteger(result.notesVersion)) updateDetails(cardId, current => ({ ...current, notesVersion: result.notesVersion }))
+      noteActivity(result.activity)
+      const card = boardRef.current?.cards?.[cardId]
+      if (result.card && card) {
+        const next = structuredClone(boardRef.current)
+        const { notesLength, ...rest } = next.cards[cardId]
+        next.cards[cardId] = { ...rest, notes: result.card.notes, ...(Number.isInteger(result.card.notesLength) ? { notesLength: result.card.notesLength } : {}) }
+        boardRef.current = next
+        setBoard(next)
+      }
+      setSavedTick(tick => tick + 1)
     })
     return notes
   }
 
   const resolveNotesConflict = keepMine => {
-    const conflict = notesConflict
+    const conflict = notesConflictRef.current
     if (!conflict) return
     setNotesConflict(null)
     updateDetails(conflict.cardId, current => ({ ...current, notes: conflict.theirs, notesVersion: conflict.notesVersion }))
-    // Keep mine deliberately replaces the text the conflict showed.
-    if (keepMine) saveCardNotes(conflict.cardId, conflict.mine, conflict.notesVersion)
+    // Keep mine deliberately replaces the newest text the conflict knows of.
+    if (keepMine) saveCardNotes(conflict.cardId, conflict.mine, { version: conflict.notesVersion, text: conflict.theirs })
   }
 
   // Every assignment change on a saved card records who made it. Taking a
@@ -2129,11 +2182,11 @@ export default function Board({
 
             <DescriptionSection
               cardId={openCard_.id}
-              text={openDetails && typeof openDetails.notes === 'string' ? openDetails.notes : openCard_.notes}
+              text={shownNotes(openDetails, openCard_)}
               canWrite={access.canWrite}
               editable={!hasExternalNotes(openCard_) || openDetails?.status === 'ok'}
               loading={hasExternalNotes(openCard_) && (!openDetails || openDetails.status === 'loading')}
-              maxLength={share ? MAX_NOTES_CHARS : null}
+              maxLength={share && openDetails?.status === 'ok' ? MAX_NOTES_CHARS : null}
               conflict={notesConflict?.cardId === openCard_.id}
               error={notesError}
               onEditStart={() => beginNotesEdit(openCard_.id)}

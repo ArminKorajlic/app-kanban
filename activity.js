@@ -13,9 +13,10 @@ import { cardPullUrls } from './operations.js'
 
 export const MAX_ACTIVITY_PER_CARD = 100
 export const MAX_ACTIVITY_TEXT = 300
-// A description saved beside a shared board may be at most this long (the host
-// enforces it too: MAX_NOTES_CHARS in collaboration/service.py). Longer text
-// belongs in an attachment.
+// A description saved beside a shared board may not grow past this length
+// (the host enforces it too: MAX_NOTES_CHARS in collaboration/service.py). An
+// older, longer description stays editable as long as it does not grow.
+// Longer text belongs in an attachment.
 export const MAX_NOTES_CHARS = 16000
 
 // Keep in step with ACTIVITY_TYPES in collaboration/service.py: the host

@@ -408,8 +408,10 @@ export function DescriptionSection({ cardId, text, canWrite, editable, loading, 
     return () => observer?.disconnect()
   }, [text, expanded, editable])
   if (!canWrite && !text) return null
+  // An older description may already be longer than the limit: it can still
+  // be edited, just not made longer (the host applies the same rule).
   const commit = value => {
-    if (maxLength && value.length > maxLength) {
+    if (maxLength && value.length > maxLength && value.length > (text || '').length) {
       setRefusedLength(value.length)
       return false
     }
@@ -442,7 +444,7 @@ export function DescriptionSection({ cardId, text, canWrite, editable, loading, 
       </div>
     </div>}
     {refusedLength > 0 && <p className="kb-attachment-error" role="alert">
-      Not saved: this description has {refusedLength.toLocaleString()} characters. A shared board keeps at most {maxLength.toLocaleString()}. Make it shorter or move the long part into an attachment.
+      Not saved: this description has {refusedLength.toLocaleString()} characters. A shared board keeps at most {maxLength.toLocaleString()}, and a longer one can be edited but not made longer. Make it shorter or move the long part into an attachment.
     </p>}
     {error && <p className="kb-attachment-error" role="alert">{error}</p>}
   </CardSection>

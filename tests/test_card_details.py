@@ -119,6 +119,18 @@ class CardDetails(unittest.IsolatedAsyncioTestCase):
                                   {'notes': 'x' * (MAX_NOTES_CHARS + 1), 'expected_version': 0}, 413)
         self.assertEqual(refused['code'], 'notes-too-long')
 
+    async def test_older_description_over_the_cap_can_be_edited_but_not_grown(self):
+        # Descriptions written before the cap move out whole on the first write.
+        older = 'y' * (MAX_NOTES_CHARS + 500)
+        await self.write(self.a, board(older))
+        version = (await self.call(self.a, 'GET', f'{self.base}/cards/c1'))['notes_version']
+        longer = await self.call(self.a, 'PUT', f'{self.base}/cards/c1/notes',
+                                 {'notes': older + ' more', 'expected_version': version}, 413)
+        self.assertEqual(longer['code'], 'notes-too-long')
+        shorter = await self.call(self.a, 'PUT', f'{self.base}/cards/c1/notes',
+                                  {'notes': older[:-100], 'expected_version': version})
+        self.assertEqual(shorter['card']['notesLength'], len(older) - 100)
+
     async def test_activity_author_is_stamped_by_the_host_not_the_client(self):
         await self.join()
         saved = await self.call(self.b, 'POST', f'{self.base}/cards/c1/activity',

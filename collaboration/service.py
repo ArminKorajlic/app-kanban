@@ -498,7 +498,9 @@ class Service:
             return {'status':'conflict','notes':current_notes,'notes_version':record['notes_version']}
         if notes == current_notes:
             return {'status':'ok','notes_version':record['notes_version'],'version':row['version'],'card':card}
-        if len(notes) > MAX_NOTES_CHARS:
+        # Older descriptions may already be longer (moved out by settle_cards);
+        # they stay editable as long as an edit does not make them longer.
+        if len(notes) > MAX_NOTES_CHARS and len(notes) > len(current_notes):
             fail(413,'notes-too-long',f'A description can be at most {MAX_NOTES_CHARS} characters.')
         record['notes_version'] += 1
         if len(notes) > NOTES_PREVIEW_CHARS:
