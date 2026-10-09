@@ -110,6 +110,60 @@ class Collaboration(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(m['active'] for m in state['members'].values()))
         self.assertEqual(state['version'],1)
 
+    def board_record(self,service):
+        return service.store.db.execute("SELECT body FROM records WHERE kind='board' AND id=?",(self.oid,)).fetchone()[0]
+
+    async def test_read_only_polls_skip_the_write_lock_until_presence_needs_refreshing(self):
+        await self.join()
+        path=f'boards/a.example/{self.oid}/state'
+        await self.call(self.b,'GET',path)
+        before=self.board_record(self.a)
+        locks=[]
+        real=self.a.store.transaction
+        def counted():
+            locks.append(1)
+            return real()
+        with patch.object(self.a.store,'transaction',counted):
+            for _ in range(2):
+                self.clock[0]+=1.5
+                state=await self.call(self.b,'GET',path)
+            self.assertEqual(locks,[])
+            self.assertEqual(self.board_record(self.a),before)
+            self.clock[0]+=2
+            await self.call(self.b,'GET',path)
+            self.assertEqual(len(locks),1)
+            self.assertNotEqual(self.board_record(self.a),before)
+        self.assertEqual(sum(m['active'] for m in state['object']['members'].values()),2)
+
+    async def test_throttled_presence_keeps_a_steadily_polling_member_active(self):
+        await self.join()
+        path=f'boards/a.example/{self.oid}/state'
+        for _ in range(20):
+            self.clock[0]+=3
+            await self.call(self.b,'GET',path)
+            members=(await self.call(self.a,'GET',f'boards/{self.oid}/members'))['members']
+            self.assertTrue(all(m['active'] for m in members.values() if not m.get('host_owner')),members)
+
+    async def test_a_lost_poll_on_a_slow_link_does_not_drop_a_member_from_active(self):
+        await self.join()
+        path=f'boards/a.example/{self.oid}/state'
+        await self.call(self.b,'GET',path)
+        for _ in range(2):
+            self.clock[0]+=2.5
+            await self.call(self.b,'GET',path)
+        # The next poll is lost and the one after arrives 3 s late.
+        self.clock[0]+=2.5*2+3
+        members=(await self.call(self.a,'GET',f'boards/{self.oid}/members'))['members']
+        self.assertTrue(all(m['active'] for m in members.values() if not m.get('host_owner')),members)
+
+    async def test_a_new_display_name_is_persisted_without_waiting_for_presence(self):
+        joined=await self.join()
+        self.b.owner_name='Renamed B'
+        self.clock[0]+=1
+        await self.call(self.b,'GET',f'boards/a.example/{self.oid}/state')
+        members=(await self.call(self.a,'GET',f'boards/{self.oid}/members'))['members']
+        self.assertIn('Renamed B',[m['name'] for m in members.values()])
+
     async def test_lost_join_response_retries_same_membership_after_restart(self):
         invitation=await self.call(self.a,'POST',f'boards/{self.oid}/invites',{'role':'editor'})
         real=self.b.request

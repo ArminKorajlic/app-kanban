@@ -4,8 +4,27 @@ import { listBoards, listBoardsWithStatus, includeSharedBoards, createBoard, del
 import { configureSync, recoverMemberships, loadShareMap, listInvitations, acceptInvitation, joinWithInvite, declineInvitation, leaveBoard, deleteSharedObject, removeShareEntry } from './sync.js'
 import { sharingFromBoards } from './publication.js'
 import { createBoardLoadCoordinator } from './request-guard.js'
+import { appVisible, onAppVisibilityChange } from './visibility.js'
 import Home from './ui/Home.jsx'
 import Board from './ui/Board.jsx'
+
+// Invitations only render on the home view and arrive rarely, so they are
+// fetched on entering home and then at this slow cadence while it stays shown.
+const INVITATION_POLL_MS = 30_000
+const NO_BOARDS = []
+
+function sameInvitations(left, right) {
+  return left === right || JSON.stringify(left) === JSON.stringify(right)
+}
+
+function useAppVisible() {
+  const [visible, setVisible] = useState(appVisible)
+  useEffect(() => {
+    setVisible(appVisible())
+    return onAppVisibilityChange(setVisible)
+  }, [])
+  return visible
+}
 
 function LoadingBoards() {
   return (
@@ -26,6 +45,7 @@ export default function App({ appId, token }) {
   const [directoryUnavailable, setDirectoryUnavailable] = useState(false)
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [online, setOnline] = useState(() => window.mobius?.online !== false)
+  const visible = useAppVisible()
   const navRef = useRef(null)
   // The current history entry owns its board destination independently from
   // the visible route. Back can show the gallery without destroying the
@@ -42,7 +62,7 @@ export default function App({ appId, token }) {
   const refreshInvitations = useCallback(async () => {
     try {
       const next = await listInvitations()
-      setInvitations(next)
+      setInvitations(current => sameInvitations(current, next) ? current : next)
       return next
     } catch {
       // Invitations are additive UI: a temporary federation failure must not
@@ -65,7 +85,6 @@ export default function App({ appId, token }) {
       setDirectoryUnavailable(!listing.complete && b.length === 0)
       setShareMap(map)
       setResolved(true)
-      refreshInvitations()
       if (!readySignalled.current) {
         readySignalled.current = true
         window.mobius?.signal?.('app_ready', { item_count: b.length })
@@ -78,7 +97,7 @@ export default function App({ appId, token }) {
       window.mobius?.signal?.('error', { message: String(e?.message || e), source: 'list' })
       return null
     }
-  }, [refreshInvitations])
+  }, [])
 
   useEffect(() => {
     const isCurrent = boardLoadCoordinatorRef.current.beginStartup()
@@ -113,7 +132,6 @@ export default function App({ appId, token }) {
           boardEntryDestinationRef.current = ui.lastBoardId
           saveLastBoardId(ui.lastBoardId).catch(() => {})
         }
-        refreshInvitations()
         if (!readySignalled.current) {
           readySignalled.current = true
           window.mobius?.signal?.('app_ready', { item_count: b.length })
@@ -152,19 +170,15 @@ export default function App({ appId, token }) {
       try { unsubscribeOnline?.() } catch {}
       if (t) clearInterval(t)
     }
-  }, [refresh, refreshInvitations, loadAttempt])
+  }, [refresh, loadAttempt])
 
+  const homeShown = resolved && !openId && boards !== null
   useEffect(() => {
-    const check = () => {
-      if (!document.hidden && window.mobius?.online !== false) refreshInvitations()
-    }
-    const timer = setInterval(check, 3000)
-    document.addEventListener('visibilitychange', check)
-    return () => {
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', check)
-    }
-  }, [refreshInvitations])
+    if (!homeShown || !visible || !online) return undefined
+    refreshInvitations()
+    const timer = setInterval(refreshInvitations, INVITATION_POLL_MS)
+    return () => clearInterval(timer)
+  }, [homeShown, visible, online, refreshInvitations])
 
   const showBoard = useCallback(id => {
     navigationIntentRef.current += 1
@@ -305,6 +319,14 @@ export default function App({ appId, token }) {
     openBoard(boardId)
   }, [refresh, openBoard])
 
+  // Stable props let the memoized Board skip renders caused by App-only state.
+  const onBoardRenamed = useCallback((id, title) => {
+    setBoards(list => list?.map(board => board.id === id ? { ...board, title } : board))
+  }, [])
+  const onShared = useCallback(entry => {
+    setShareMap(m => ({ byBoard: { ...m.byBoard, [openId]: entry } }))
+  }, [openId])
+
   return (
     <div className="kb-root">
       <style>{CSS}</style>
@@ -326,15 +348,15 @@ export default function App({ appId, token }) {
           key={openId}
           token={token}
           boardId={openId}
-          boards={boards || []}
+          boards={boards || NO_BOARDS}
           shareMap={shareMap.byBoard}
           onAllBoards={closeBoard}
           onSwitchBoard={switchBoard}
           onCreateBoard={onCreateInBoard}
-          onBoardRenamed={(id, title) => setBoards(list => list?.map(board => board.id === id ? { ...board, title } : board))}
+          onBoardRenamed={onBoardRenamed}
           online={online}
           share={shareMap.byBoard[openId] || null}
-          onShared={entry => setShareMap(m => ({ byBoard: { ...m.byBoard, [openId]: entry } }))}
+          onShared={onShared}
         />
       ) : boards ? (
         <Home
