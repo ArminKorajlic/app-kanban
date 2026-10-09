@@ -45,7 +45,7 @@ test('board views select all, my, or unowned cards', () => {
 
 test('text filter finds a card by the person it is assigned to', () => {
   assert.equal(cardMatchesFilters({ title: 'Fix sync', ...theirs }, 'bob'), true)
-  assert.equal(cardMatchesFilters({ title: 'Fix sync', assignee: 'host.example' }, 'irfani', [], '@irfani'), true)
+  assert.equal(cardMatchesFilters({ title: 'Fix sync', assignee: 'host.example' }, 'casey', [], '@casey'), true)
   assert.equal(cardMatchesFilters({ title: 'Fix sync', ...theirs }, 'alice'), false)
 })
 
@@ -154,7 +154,7 @@ test('the chosen view is saved per board without disturbing other preferences', 
 })
 
 test('folded lists are remembered per board, privately, without disturbing other preferences', async () => {
-  const { saveCollapsedLists } = await import('../storage.js')
+  const { saveListFolds } = await import('../storage.js')
   let saved = { lastBoardId: 'b1', boardViews: { b1: 'mine' }, collapsedLists: { b2: ['done'] } }
   let version = 'v1'
   globalThis.window = { mobius: { storage: {
@@ -166,6 +166,31 @@ test('folded lists are remembered per board, privately, without disturbing other
       version = 'v2'
     },
   } } }
-  await saveCollapsedLists('b1', ['backlog', 'backlog', 'done'])
-  assert.deepEqual(saved, { lastBoardId: 'b1', boardViews: { b1: 'mine' }, collapsedLists: { b2: ['done'], b1: ['backlog', 'done'] } })
+  await saveListFolds('b1', { folded: ['backlog', 'backlog'], opened: ['done'] })
+  assert.deepEqual(saved, {
+    lastBoardId: 'b1', boardViews: { b1: 'mine' },
+    collapsedLists: { b2: ['done'], b1: ['backlog'] },
+    openedLists: { b1: ['done'] },
+  })
+})
+
+test('the Done list starts folded for each person until they open it; other lists start open', async () => {
+  const { listIsFolded, isDoneColumn } = await import('../domain.js')
+  const none = { folded: new Set(), opened: new Set() }
+  assert.equal(listIsFolded({ id: 'd', name: ' Done ' }, none), true)
+  assert.equal(listIsFolded({ id: 't', name: 'To do' }, none), false)
+  assert.equal(listIsFolded({ id: 'd', name: 'Done' }, { folded: new Set(), opened: new Set(['d']) }), false, 'opening Done is remembered')
+  assert.equal(listIsFolded({ id: 't', name: 'To do' }, { folded: new Set(['t']), opened: new Set() }), true)
+  assert.equal(isDoneColumn({ name: 'Finished' }), false, 'only the list completing a card moves cards into counts as Done')
+})
+
+test('what you last saw is remembered per board, privately, without disturbing other preferences', async () => {
+  const { saveSeenCards } = await import('../storage.js')
+  let saved = { lastBoardId: 'b1', boardViews: { b1: 'changed' }, seenCards: { b2: { x: '1' } } }
+  globalThis.window = { mobius: { storage: {
+    async getWithVersion() { return { value: structuredClone(saved), version: 'v1' } },
+    async durableWrite(path, value) { assert.equal(path, 'ui.json'); saved = value },
+  } } }
+  await saveSeenCards('b1', { a: 'k3', b: 'z9' })
+  assert.deepEqual(saved, { lastBoardId: 'b1', boardViews: { b1: 'changed' }, seenCards: { b2: { x: '1' }, b1: { a: 'k3', b: 'z9' } } })
 })

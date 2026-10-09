@@ -3,7 +3,7 @@
 // base instead of trusting the runtime's blind offline write queue.
 import { parsePullRequestUrl } from './prMatching.js'
 import { applyAssignment } from './assignment.js'
-import { COLUMN_COLOR_KEYS } from './domain.js'
+import { COLUMN_COLOR_KEYS, isDoneColumn, MAX_LABEL_NAME_CHARS, normalizeLabelNames } from './domain.js'
 
 function insertBefore(ids, itemId, beforeId) {
   const next = (Array.isArray(ids) ? ids : []).filter(id => id !== itemId)
@@ -141,7 +141,7 @@ export function applyBoardOp(board, op) {
         card.pullRequestUrls = cardPullUrls({ pullRequestUrls: [...cardPullUrls(card), link] })
         card.pullRequestUrl = card.pullRequestUrls[0]
       }
-      const done = board.columns.find(column => String(column.name || '').trim().toLocaleLowerCase() === 'done')
+      const done = board.columns.find(isDoneColumn)
       if (done && !done.cardIds.includes(op.cardId)) {
         board.columns.forEach(column => { column.cardIds = column.cardIds.filter(id => id !== op.cardId) })
         done.cardIds.push(op.cardId)
@@ -183,6 +183,17 @@ export function applyBoardOp(board, op) {
     case 'rename-board':
       if (op.title) board.title = op.title
       return board
+    // One colour at a time, so two people naming different labels never
+    // overwrite each other. An empty name removes it.
+    case 'name-label': {
+      if (!COLUMN_COLOR_KEYS.includes(op.color)) return board
+      const names = normalizeLabelNames(board.labelNames)
+      const name = String(op.name ?? '').trim().slice(0, MAX_LABEL_NAME_CHARS)
+      if (name) names[op.color] = name
+      else delete names[op.color]
+      board.labelNames = names
+      return board
+    }
     default:
       return board
   }

@@ -24,6 +24,27 @@ export const invitationKey = invitation => `${invitation.host}:${invitation.id}`
 
 export const COLUMN_COLOR_KEYS = ['red', 'amber', 'green', 'blue', 'purple', 'pink']
 
+// A board can name its label colours ("red" = "Urgent"). Names live on the
+// board, so everyone sharing it reads the same meaning; a colour without a
+// name still works as a plain colour.
+export const MAX_LABEL_NAME_CHARS = 24
+
+export function normalizeLabelNames(value) {
+  const names = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return names
+  for (const color of COLUMN_COLOR_KEYS) {
+    const name = typeof value[color] === 'string' ? value[color].trim().slice(0, MAX_LABEL_NAME_CHARS) : ''
+    if (name) names[color] = name
+  }
+  return names
+}
+
+// What a label is called in menus and filters: its board name, else its colour.
+export function labelDisplayName(color, labelNames) {
+  const name = normalizeLabelNames(labelNames)[color]
+  return name || (color ? color.charAt(0).toLocaleUpperCase() + color.slice(1) : '')
+}
+
 export function defaultColumnColor(index) {
   if (index === 0) return null
   if (index === 1) return 'blue'
@@ -67,6 +88,24 @@ export function dueDateStatus(due, today = new Date()) {
   if (due < current) return 'overdue'
   if (due === current) return 'today'
   return 'upcoming'
+}
+
+// A short, readable name for a link: the site plus the last part of the
+// address ("abseil.io/…/ch19.html"), or "repo#123" for GitHub pull requests
+// and issues. The full address stays in the link and its tooltip.
+export function shortLinkText(href) {
+  let url
+  try { url = new URL(href) } catch { return href }
+  const host = url.hostname.replace(/^www\./u, '')
+  const segments = url.pathname.split('/').filter(Boolean)
+  if (host === 'github.com' && ['pull', 'issues'].includes(segments[2]) && /^\d+$/u.test(segments[3] || '')) {
+    return `${segments[1]}#${segments[3]}`
+  }
+  if (!segments.length) return host
+  let last = segments[segments.length - 1]
+  try { last = decodeURIComponent(last) } catch { /* keep the raw segment */ }
+  if (last.length > 28) last = `${last.slice(0, 27)}…`
+  return segments.length === 1 ? `${host}/${last}` : `${host}/…/${last}`
 }
 
 // Cards use compact, date-only copy. Working in UTC after validating the ISO
@@ -120,6 +159,60 @@ export function assigneeAvatar(name) {
 }
 
 const safeChecklist = checklist => Array.isArray(checklist) ? checklist : []
+
+// The list named "Done" holds finished work: completing a card moves it there
+// (operations.js complete-card), and it starts folded for each person until
+// they open it.
+export function isDoneColumn(column) {
+  return String(column?.name || '').trim().toLocaleLowerCase() === 'done'
+}
+
+// `folded` are lists this person folded; `opened` are lists they opened that
+// would otherwise start folded. Both are personal, never shared.
+export function listIsFolded(column, { folded, opened }) {
+  return folded.has(column.id) || (isDoneColumn(column) && !opened.has(column.id))
+}
+
+// "Changed since you looked": each card is reduced to a short fingerprint of
+// what a person sees on it (its list, title, description, label, due date,
+// person, checklist, pull requests and attachments). A card whose fingerprint
+// differs from the one remembered when you last saw it has changed.
+function fingerprintHash(text) {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+export function cardFingerprint(card, columnId) {
+  return fingerprintHash(JSON.stringify([
+    columnId || '', card?.title || '', card?.notes || '', card?.notesLength ?? null, card?.notesVersion ?? null,
+    card?.label || 'none', card?.due || '', card?.assignee || '', card?.assigneeHost || '',
+    (card?.checklist || []).map(item => [item?.id, item?.text, item?.done === true]),
+    card?.pullRequestUrls || [], (card?.attachments || []).map(item => item?.id),
+  ]))
+}
+
+// Fingerprints of every card on the board, keyed by card id.
+export function boardFingerprints(board) {
+  const prints = {}
+  for (const column of board?.columns || []) {
+    for (const id of column.cardIds || []) {
+      if (board.cards?.[id]) prints[id] = cardFingerprint(board.cards[id], column.id)
+    }
+  }
+  return prints
+}
+
+// Cards that are new or different since `seen` was remembered. Without a
+// remembered state nothing counts as changed: the first visit is the baseline.
+export function changedCardIds(board, seen) {
+  if (!seen || typeof seen !== 'object') return new Set()
+  const prints = boardFingerprints(board)
+  return new Set(Object.keys(prints).filter(id => seen[id] !== prints[id]))
+}
 
 export function checklistProgress(checklist) {
   const items = safeChecklist(checklist)

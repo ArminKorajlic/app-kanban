@@ -42,6 +42,9 @@ Commands and stdin shapes:
   Other editable fields: label, due, assignee, assigneeHost, and
   `pullRequestUrls` (the card's full list of linked GitHub pull request URLs;
   read the card first and send the whole list, since it replaces the old one).
+  `label` is a colour: none, red, amber, green, blue, purple or pink. A board's
+  `labelNames` (shown by `read`) says what each colour means there, such as
+  red = Urgent; choose the colour by that meaning.
 - `move-card BOARD_ID`: `{"cardId":"...","toColumnId":"...","beforeCardId":null}`
 
 ## Marking a finished task done

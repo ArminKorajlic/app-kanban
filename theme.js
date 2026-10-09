@@ -216,7 +216,7 @@ export const CSS = `
     flex-wrap: wrap;
   }
   .kb-filter-input { flex: 1 1 220px; min-width: 120px; }
-  .kb-filter-label-btn { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; min-height: 44px; padding: 0 11px; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: var(--muted); font: 550 12px var(--font); text-transform: capitalize; cursor: pointer; }
+  .kb-filter-label-btn { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; min-height: 44px; padding: 0 11px; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: var(--muted); font: 550 12px var(--font); cursor: pointer; }
   .kb-filter-label-btn .kb-filter-dot { width: 10px; height: 10px; }
   .kb-filter-label-btn.kb-on { background: var(--surface-2); border-color: var(--accent); color: var(--text); }
   .kb-field-label { font-size: 12px; font-weight: 600; color: var(--muted); }
@@ -306,49 +306,45 @@ export const CSS = `
   .kb-board::-webkit-scrollbar, .kb-cards::-webkit-scrollbar { width: 7px; height: 7px; }
   .kb-board::-webkit-scrollbar-thumb, .kb-cards::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
   .kb-board::-webkit-scrollbar-track, .kb-cards::-webkit-scrollbar-track { background: transparent; }
+  /* Board cards: every card has the same shape, a title of at most two lines
+     and one details row, so a list reads as an even column. */
   .kb-card {
     position: relative;
     flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
     background: var(--surface);
-    border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+    border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
     border-radius: 12px;
-    padding: 14px;
+    padding: 11px 14px 10px;
     cursor: grab;
     touch-action: pan-x pan-y;
     user-select: none;
     -webkit-user-select: none;
-    box-shadow: none;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
     transition: box-shadow 120ms ease-out, transform 120ms ease-out;
     min-height: 44px;
   }
   .kb-card:active { cursor: grabbing; }
   .kb-card-open { position: absolute; inset: 0; z-index: 1; width: 100%; border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
+  /* Your cards carry a purple edge and a purple ring around your avatar. */
+  .kb-card.is-mine::before { content: ""; position: absolute; left: -1px; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+  .kb-card.is-mine .kb-avatar { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--accent); }
+  /* A card someone else changed since you last looked. */
+  .kb-card-new { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: 1.5px; }
   .kb-card-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .kb-card.kb-readonly { cursor: pointer; }
-  .kb-card-attachment-summary {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    margin-top: 8px;
-    color: var(--muted);
-    font-size: 11.5px;
-  }
-  .kb-card-attachment-summary svg { width: 14px; height: 14px; }
-  .kb-card-title { font-size: 14px; font-weight: 550; line-height: 1.5; overflow-wrap: anywhere; pointer-events: none; }
+  .kb-card-title { min-height: calc(2 * 1.35em); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 14.5px; font-weight: 620; line-height: 1.35; letter-spacing: -0.012em; overflow-wrap: anywhere; pointer-events: none; }
   .kb-card-title a { position: relative; z-index: 2; pointer-events: auto; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
-  .kb-card-notes {
-    margin-top: 7px;
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.4;
-    overflow-wrap: anywhere;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow: hidden;
-  }
-  .kb-label { width: 28px; height: 4px; border-radius: 2px; margin-bottom: 7px; }
-  .kb-card-meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; min-width: 0; }
+  .kb-card-meta { min-width: 0; min-height: 22px; display: flex; align-items: center; gap: 9px; overflow: hidden; }
+  .kb-card-count { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kb-card-count > svg { width: 13px; height: 13px; }
+  .kb-card-count.is-complete { color: var(--kb-success); }
+  /* A label is a tinted chip with a dot and, when the board names it, its name. */
+  .kb-card-label { min-width: 0; flex: 0 1 auto; display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px 1px 6px; overflow: hidden; border-radius: 6px; background: color-mix(in srgb, var(--kb-lc) 15%, transparent); color: var(--kb-lc); font-size: 11.5px; font-weight: 600; line-height: 18px; white-space: nowrap; text-overflow: ellipsis; }
+  .kb-card-label::before { content: ""; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: currentColor; }
+  .kb-card-label:empty { width: 20px; height: 20px; flex: 0 0 20px; padding: 0; justify-content: center; border-radius: 50%; }
   .kb-card-meta-spacer { flex: 1 1 auto; min-width: 0; }
   .kb-avatar {
     width: 22px;
@@ -367,9 +363,6 @@ export const CSS = `
   .kb-due-overdue { color: var(--kb-danger); background: color-mix(in srgb, #ef4444 13%, transparent); }
   .kb-due-today { color: var(--kb-warning); background: color-mix(in srgb, #f59e0b 14%, transparent); }
   .kb-due-upcoming { color: var(--muted); background: var(--surface-2); }
-  .kb-check-progress { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 600; }
-  .kb-progress-track { width: 50px; height: 3px; border-radius: 999px; overflow: hidden; background: var(--surface-2); }
-  .kb-progress-fill { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
   .kb-card.kb-lifted { opacity: 0.35; }
   .kb-ghost {
     position: fixed;
@@ -545,7 +538,7 @@ export const CSS = `
   .kb-scrim {
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.35);
+    background: rgba(0,0,0,0.6);
     z-index: 60;
   }
   .kb-sheet {
@@ -637,12 +630,23 @@ export const CSS = `
   }
   .kb-notes-display a { position: relative; z-index: 2; pointer-events: auto; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
   .kb-notes-empty { color: var(--muted); }
-  .kb-pr-link { min-width: 0; min-height: 44px; display: inline-flex; align-items: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; font-weight: 650; text-decoration: none; }
-  .kb-pr-link:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
-  .kb-pr-edit { min-height: 44px; border: 0; padding: 6px; color: var(--muted); background: transparent; font: 600 12px/1 var(--font); cursor: pointer; }
+  .kb-pr-line { min-height: 44px; display: flex; align-items: center; gap: 10px; }
+  .kb-pr-empty { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .kb-pr-icon { width: 16px; height: 16px; flex: 0 0 auto; color: var(--muted); }
+  .kb-pr-link { flex: 1 1 auto; min-width: 0; min-height: 44px; display: flex; flex-direction: column; justify-content: center; gap: 1px; color: var(--text); text-decoration: none; }
+  .kb-pr-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 560; }
+  .kb-pr-ref { color: var(--muted); font-size: 12px; }
+  .kb-pr-link:hover .kb-pr-name { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+  .kb-pr-edit { flex: 0 0 auto; width: 36px; height: 36px; min-height: 36px; padding: 0; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
   .kb-pr-edit:hover { color: var(--text); }
-  .kb-pr-remove, .kb-pr-refresh { flex: 0 0 44px; width: 44px; height: 44px; min-height: 44px; padding: 0; font-size: 18px; line-height: 1; }
-  .kb-pr-remove > svg, .kb-pr-refresh > svg { width: 15px; height: 15px; }
+  .kb-pr-edit > svg { width: 15px; height: 15px; }
+  .kb-pr-refresh { flex: 0 0 44px; width: 44px; height: 44px; min-height: 44px; padding: 0; }
+  .kb-pr-refresh > svg { width: 15px; height: 15px; }
+  /* With a mouse, the pencil appears on the line you point at; touch screens always show it. */
+  @media (hover: hover) {
+    .kb-pr-edit { opacity: 0; transition: opacity 0.15s ease; }
+    .kb-pr-line:hover .kb-pr-edit, .kb-pr-edit:focus-visible { opacity: 1; }
+  }
   .kb-pr-editor { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
   .kb-pr-editor .kb-input { min-width: 0; flex: 1 1 auto; font-size: 16px; }
   .kb-pr-editor .kb-btn { min-height: 44px; padding-inline: 11px; }
@@ -677,11 +681,6 @@ export const CSS = `
   .kb-col-name { font-size: 15px; font-weight: 650; letter-spacing: -0.015em; }
   .kb-count { padding: 3px 7px; font-size: 14px; font-weight: 650; background: color-mix(in srgb, var(--surface) 68%, var(--surface-2)); }
   .kb-cards { gap: 9px; padding: 3px 10px 8px; }
-  .kb-card { background: var(--surface); border: 1px solid color-mix(in srgb, var(--text) 9%, transparent); border-radius: 12px; padding: 14px 15px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18); }
-  .kb-card-title { font-size: 14.5px; font-weight: 620; line-height: 1.35; letter-spacing: -0.012em; }
-  .kb-card-notes { margin-top: 6px; line-height: 1.45; }
-  .kb-card-meta { margin-top: 10px; }
-  .kb-label { width: 22px; height: 3px; margin-bottom: 8px; }
   .kb-btn { border-radius: 8px; font-weight: 650; letter-spacing: -0.01em; }
   .kb-iconbtn { border-radius: 8px; }
   .kb-iconbtn:hover { background: var(--surface-2); color: var(--text); }
@@ -1076,6 +1075,9 @@ export const CSS = `
   }
 
   .kb-check-text { min-width: 0; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; overflow-wrap: anywhere; cursor: text; }
+  .kb-check-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .kb-check-text a { color: var(--accent); font-weight: 550; text-decoration: none; }
+  .kb-check-text a:hover { text-decoration: underline; text-underline-offset: 2px; }
   .kb-check-edit { min-width: 0; min-height: 40px; flex: 1; }
   .kb-lightbox-scrim { z-index: 70; background: rgba(0,0,0,.72); }
   .kb-lightbox { position: fixed; inset: 6vh 6vw; z-index: 71; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
@@ -1087,7 +1089,7 @@ export const CSS = `
     .kb-col-head { padding-right: 8px; }
   }
 
-  .kb-list-nav { display: none; }
+  .kb-list-nav, .kb-list-bar { display: none; }
   .kb-clear-filters { flex: 0 0 auto; white-space: nowrap; }
   .kb-home-header { width: min(100%, 1100px); margin-inline: auto; }
   .kb-home-header + .kb-divider { max-width: 1068px; }
@@ -1105,6 +1107,15 @@ export const CSS = `
       font: 550 13px/1.3 var(--font); cursor: pointer;
     }
     .kb-list-jump:active { background: var(--surface-2); }
+    /* The tab of the list in view is its header: highlighted, with the list menu beside the tabs. */
+    .kb-list-bar { display: flex; align-items: center; gap: 2px; padding-right: 8px; }
+    .kb-list-bar .kb-list-nav { flex: 1 1 auto; min-width: 0; padding: 8px 4px 0 16px; }
+    .kb-list-bar-menu { flex: 0 0 auto; padding-top: 8px; }
+    .kb-list-bar-menu .kb-menu-trigger { width: 44px; height: 44px; }
+    .kb-list-jump[aria-current="true"] { background: var(--surface-2); border-color: transparent; font-weight: 650; }
+    .kb-list-jump[aria-current="true"] .kb-list-jump-count { color: var(--text); }
+    .kb-col:not(.is-renaming) > .kb-col-head { display: none; }
+    .kb-col > .kb-cards { padding-top: 10px; }
     .kb-list-jump-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .kb-list-jump-count { color: var(--muted); font-variant-numeric: tabular-nums; }
     .kb-col-head { flex-wrap: wrap; }
@@ -1145,8 +1156,6 @@ export const CSS = `
     .kb-card:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--text) 18%, transparent); box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.45); }
   }
 
-  /* Linked pull requests: compact rows that keep 44px touch targets. */
-  .kb-pr-edit { padding-inline: 8px; }
 
   /* Filled buttons keep white labels at AA contrast on the platform accent. */
   .kb-btn-primary, .kb-card-toolbar-done { background: color-mix(in srgb, var(--accent) 78%, #000); color: #fff; }
@@ -1225,14 +1234,23 @@ export const CSS = `
     text-align: center;
   }
   .kb-view-option[aria-pressed="true"] .kb-view-count {
+    background: color-mix(in srgb, var(--muted) 24%, transparent);
+    color: var(--text);
+  }
+  /* Purple means you: your cards, and cards changed since you last looked. */
+  .kb-view-option.is-you .kb-view-count {
     background: color-mix(in srgb, var(--accent) 16%, transparent);
     color: var(--accent);
   }
   @media (max-width: 640px) {
     .kb-board-header { flex-wrap: wrap; row-gap: 8px; }
-    .kb-view-switch { order: 10; flex: 1 0 100%; }
-    .kb-view-option { flex: 1 1 0; min-height: 40px; }
+    .kb-view-switch { order: 10; flex: 1 0 100%; overflow-x: auto; scrollbar-width: none; }
+    .kb-view-switch::-webkit-scrollbar { display: none; }
+    .kb-view-option { flex: 1 0 auto; min-height: 40px; }
   }
+  .kb-view-note { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 16px; padding: 10px 20px 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
+  .kb-view-note .kb-quiet-action { color: var(--accent); }
+  @media (max-width: 640px) { .kb-view-note { padding-inline: 16px; } }
 
   .kb-activity-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
   .kb-activity-item { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; font-size: 13.5px; }
@@ -1334,8 +1352,14 @@ export const CSS = `
   .kb-popover-backdrop { position: fixed; inset: 0; z-index: 89; background: rgba(0, 0, 0, 0.24); }
   .kb-popover-menu.is-sheet { position: fixed; inset: auto 8px max(8px, env(safe-area-inset-bottom)); z-index: 90; min-width: 0; max-height: min(70dvh, 480px); border-radius: 16px; padding: 8px; }
   .kb-menu-label { flex: 1 1 auto; min-width: 0; }
+  .kb-menu-label.is-unnamed { color: var(--muted); }
+  .kb-label-names { width: min(300px, calc(100vw - 32px)); }
+  .kb-label-name-row { display: flex; align-items: center; gap: 10px; padding: 4px 10px; }
+  .kb-label-name-row .kb-chip-swatch { width: 14px; height: 14px; flex: 0 0 14px; border-radius: 4px; }
+  .kb-label-name-row .kb-input { min-width: 0; flex: 1 1 auto; min-height: 40px; }
+  .kb-label-names-hint { margin: 4px 10px 8px; color: var(--muted); font-size: 12px; line-height: 1.4; }
   .kb-menu-meta { margin-left: auto; color: var(--muted); font-size: 12.5px; }
-  .kb-menu-heading { padding: 6px 10px 4px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+  .kb-menu-heading { padding: 6px 10px 4px; color: var(--muted); font-size: 13px; font-weight: 620; letter-spacing: -0.005em; }
   .kb-menu-separator { height: 1px; margin: 4px 6px; background: var(--border); }
   .kb-popover-menu > .kb-menu-danger, .kb-quiet-action.kb-menu-danger { color: var(--kb-danger, #e5484d); }
   .kb-menu-date { min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 10px; color: var(--muted); font-size: 13px; }
@@ -1368,8 +1392,8 @@ export const CSS = `
   .kb-due-chip.is-soon { color: var(--kb-warning); border-color: color-mix(in srgb, var(--kb-warning) 45%, var(--border)); }
   .kb-section { min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 14px 0; border-top: 1px solid var(--border); }
   .kb-section-head { min-height: 20px; display: flex; align-items: center; gap: 8px; }
-  .kb-section-head h3, .kb-pr-line h3, .kb-activity-toggle h3 { margin: 0; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
-  .kb-section-count { color: var(--muted); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kb-section-head h3, .kb-pr-empty h3, .kb-activity-toggle h3 { margin: 0; color: var(--muted); font-size: 14px; font-weight: 620; letter-spacing: -0.005em; }
+  .kb-section-count { color: var(--muted); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .kb-section-progress { flex: 0 1 120px; height: 5px; overflow: hidden; border-radius: 3px; background: var(--surface-2); }
   .kb-section-progress > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 0.25s ease; }
   .kb-section-progress.is-done > span { background: var(--kb-success); }
@@ -1393,13 +1417,7 @@ export const CSS = `
   .kb-section .kb-checklist { gap: 2px; }
   .kb-check-delete { opacity: 0; transition: opacity 0.15s ease; }
   .kb-check-item:hover .kb-check-delete, .kb-check-delete:focus-visible { opacity: 1; }
-  .kb-pr-section { gap: 4px; }
-  .kb-pr-line { min-height: 40px; display: flex; align-items: center; gap: 10px; }
-  .kb-pr-right { min-width: 0; margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
-  .kb-pr-section .kb-pr-link { min-height: 36px; gap: 5px; padding: 0 6px; border-radius: 8px; font-size: 14px; }
-  .kb-pr-section .kb-pr-link > svg { width: 13px; height: 13px; color: var(--muted); }
-  .kb-pr-section .kb-pr-edit { width: 36px; height: 36px; min-height: 36px; padding: 0; }
-  .kb-pr-section .kb-pr-edit > svg { width: 15px; height: 15px; }
+  .kb-pr-section { gap: 2px; }
   .kb-attachment-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
   .kb-attachment-tile { position: relative; min-width: 0; margin: 0; }
   .kb-attachment-open { width: 100%; display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text); text-align: left; cursor: pointer; }
@@ -1409,7 +1427,11 @@ export const CSS = `
   .kb-attachment-open figcaption { overflow: hidden; padding: 0 2px; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
   .kb-attachment-remove { position: absolute; top: 10px; right: 10px; width: 30px; height: 30px; min-height: 30px; background: color-mix(in srgb, var(--surface) 85%, transparent); opacity: 0; transition: opacity 0.15s ease; }
   .kb-attachment-tile:hover .kb-attachment-remove, .kb-attachment-remove:focus-visible { opacity: 1; }
-  @media (hover: none) { .kb-check-delete, .kb-attachment-remove { opacity: 1; } }
+  @media (hover: none) {
+    .kb-attachment-remove { opacity: 1; }
+    .kb-check-item:not(.is-editing) .kb-check-delete { display: none; }
+    .kb-check-item.is-editing .kb-check-delete { opacity: 1; }
+  }
   .kb-card-activity { gap: 4px; }
   .kb-activity-toggle { width: calc(100% + 16px); min-height: 44px; margin: -6px -8px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 10px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
   .kb-activity-toggle:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
@@ -1433,14 +1455,6 @@ export const CSS = `
   }
 
   /* ---- Board: same-size cards, list menu, folded lists, list drag ---- */
-  .kb-card { display: flex; flex-direction: column; }
-  .kb-label-slot { height: 3px; flex: 0 0 3px; margin-bottom: 8px; }
-  .kb-label-slot .kb-label { margin: 0; }
-  .kb-card-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: calc(2 * 1.35em); }
-  .kb-card-notes { display: block; min-height: 1.45em; margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; -webkit-line-clamp: unset; }
-  .kb-card-meta { min-height: 22px; margin-top: 10px; }
-  .kb-card-meta .kb-card-attachment-summary { display: inline-flex; align-items: center; gap: 3px; margin: 0; color: var(--muted); font-size: 11.5px; }
-  .kb-card-meta .kb-card-attachment-summary svg { width: 13px; height: 13px; }
   .kb-due.kb-due-tone-soon { color: var(--kb-warning); background: color-mix(in srgb, #f59e0b 14%, transparent); }
   .kb-col-head { cursor: grab; user-select: none; }
   .kb-col-head .kb-col-name { cursor: text; }

@@ -291,3 +291,30 @@ test('the card sheet keeps a description it could not send and never clears a co
   assert.match(source, /useEffect\(\(\) => \{\s*setNotesConflict\(null\)\s*setNotesError\(''\)\s*\}, \[boardId, openCardId\]\)/)
   assert.equal(source.match(/setNotesConflict\(null\)/g).length, 3)
 })
+
+test('the description editor keeps full link text, so a shortened link is never saved back', async () => {
+  const parts = await readFile(new URL('../ui/CardParts.jsx', import.meta.url), 'utf8')
+  const editor = parts.slice(parts.indexOf('export function InlineCardText'), parts.indexOf('// ---- small shared pieces ----'))
+  assert.ok(editor.includes('innerText'), 'the editor saves the text it shows')
+  assert.doesNotMatch(editor, /compactLinks|shortLinkText/)
+  const description = parts.slice(parts.indexOf('export function DescriptionSection'), parts.indexOf('// ---- checklist ----'))
+  assert.doesNotMatch(description, /compactLinks/)
+})
+
+test('on touch screens a checklist bin shows only while that item is being edited', async () => {
+  const theme = await readFile(new URL('../theme.js', import.meta.url), 'utf8')
+  const parts = await readFile(new URL('../ui/CardParts.jsx', import.meta.url), 'utf8')
+  const rule = theme.indexOf('.kb-check-item:not(.is-editing) .kb-check-delete { display: none; }')
+  assert.ok(rule > 0 && theme.lastIndexOf('@media (hover: none) {', rule) > rule - 120, 'the rule lives in the touch-screen block')
+  assert.match(parts, /kb-check-item\$\{editingItem\?\.id === item\.id \? ' is-editing' : ''\}/)
+  // Pressing the bin must not blur the item editor first (that would close the edit and hide the bin).
+  assert.match(parts, /kb-check-delete"[^>]*onMouseDown=\{event => event\.preventDefault\(\)\}/s)
+})
+
+test('an opened picture closes on a tap anywhere outside it, and Escape closes the picture, not the card under it', async () => {
+  const board = await readFile(new URL('../ui/Board.jsx', import.meta.url), 'utf8')
+  assert.match(board, /const lightboxRef = useModalFocus\(Boolean\(previewAttachment\), \(\) => setPreviewAttachment\(null\)\)/)
+  const viewer = board.slice(board.indexOf('className="kb-lightbox"') - 80, board.indexOf('className="kb-lightbox-caption"'))
+  assert.match(viewer, /ref=\{lightboxRef\}/)
+  assert.match(viewer, /onClick=\{event => \{ if \(!event\.target\.closest\('\.kb-lightbox-image'\)\) setPreviewAttachment\(null\) \}\}/)
+})

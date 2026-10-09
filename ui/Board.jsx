@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, ChevronLeft, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, Share, Trash, User, X } from '@openai/apps-sdk-ui/components/Icon'
-import { uid, subscribeBoard, getBoard, boardPath, normalizeBoard, loadUi, saveBoardView, saveCollapsedLists, loadAssignmentLog, subscribeAssignmentLog, updateAssignmentLog } from '../storage.js'
+import { Check, ChevronDown, ChevronLeft, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, PullRequestOpen, Share, SquareCheckCheckboxChecked, Trash, User, X } from '@openai/apps-sdk-ui/components/Icon'
+import { uid, subscribeBoard, getBoard, boardPath, normalizeBoard, loadUi, saveBoardView, saveListFolds, saveSeenCards, loadAssignmentLog, subscribeAssignmentLog, updateAssignmentLog } from '../storage.js'
 import {
   assignmentRef,
   cardAssignment,
@@ -37,12 +37,17 @@ import {
   cardAssigneeLabel,
   boardAccess,
   boardCapacity,
+  boardFingerprints,
+  cardFingerprint,
+  changedCardIds,
   COLUMN_COLOR_KEYS,
   cardMatchesFilters,
   checklistProgress,
   defaultColumnColor,
   dueDateStatus,
   formatDueDate,
+  labelDisplayName,
+  listIsFolded,
   visibleToFullIndex,
 } from '../domain.js'
 
@@ -59,49 +64,38 @@ export const LABELS = {
   pink: 'var(--kb-label-pink, #ec4899)',
 }
 
-// Every card on the board has the same shape: a label strip (space kept when
-// there is no label), a title of at most two lines, one line of description,
-// and a details row. Pictures stay inside the card; the tile counts them.
-function Card({ card, assigneeLabel, assigneeMember, lifted, onOpen, onDragStart, canWrite }) {
+// Every card on the board has the same shape: a title of at most two lines
+// and one details row (label, due date, checklist, pull requests,
+// attachments, person). The description lives in the open card.
+function Card({ card, labelNames, mine, changed, assigneeLabel, assigneeMember, lifted, onOpen, onDragStart, canWrite }) {
   const dueStatus = dueDateStatus(card.due)
   const progress = checklistProgress(card.checklist)
   const assignee = (assigneeLabel ?? card.assignee)?.trim()
-  const notePreview = String(card.notes || '').split('\n').map(line => line.trim()).find(Boolean) || ''
   const attachments = card.attachments || []
-  const labelled = card.label && card.label !== 'none'
+  const pullCount = cardPullUrls(card).length
+  const labelled = card.label && card.label !== 'none' && LABELS[card.label]
   return (
     <div
-      className={`kb-card${lifted ? ' kb-lifted' : ''}${canWrite ? '' : ' kb-readonly'}`}
+      className={`kb-card${mine ? ' is-mine' : ''}${lifted ? ' kb-lifted' : ''}${canWrite ? '' : ' kb-readonly'}`}
       data-card-id={card.id}
       onPointerDown={canWrite ? e => { if (!e.target.closest('a')) onDragStart(e, card.id) } : undefined}
     >
       <button type="button" className="kb-card-open" aria-label={`Open card details: ${card.title}`} onClick={() => onOpen(card.id)} />
-      <div className="kb-label-slot">
-        {labelled && <div
-          className="kb-label"
-          style={{ background: LABELS[card.label] || LABELS.none }}
-          role="img"
-          aria-label={`${card.label} label`}
-        />}
+      <div className="kb-card-title">
+        {changed && <span className="kb-card-new" role="img" aria-label="Changed since you last looked" />}
+        <LinkifiedText text={card.title} compactLinks />
       </div>
-      <div className="kb-card-title"><LinkifiedText text={card.title} /></div>
-      <div className="kb-card-notes">{notePreview}</div>
       <div className="kb-card-meta">
+        {labelled && <span className="kb-card-label" style={{ '--kb-lc': LABELS[card.label] }} title={labelDisplayName(card.label, labelNames)}
+          aria-label={`Label: ${labelDisplayName(card.label, labelNames)}`}>{labelNames?.[card.label] || ''}</span>}
         {dueStatus && <span className={`kb-due kb-due-${dueStatus} kb-due-tone-${dueTone(card.due)}`}>{formatDueDate(card.due)}</span>}
-        {progress.total > 0 && <div className="kb-check-progress">
-          <span>{progress.done}/{progress.total}</span>
-          <span
-            className="kb-progress-track"
-            role="progressbar"
-            aria-label={`${progress.done} of ${progress.total} checklist items complete`}
-            aria-valuemin={0}
-            aria-valuemax={progress.total}
-            aria-valuenow={progress.done}
-          >
-            <span className="kb-progress-fill" style={{ width: `${progress.percent}%` }} />
-          </span>
-        </div>}
-        {attachments.length > 0 && <span className="kb-card-attachment-summary" aria-label={`${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`}>
+        {progress.total > 0 && <span className={`kb-card-count${progress.done === progress.total ? ' is-complete' : ''}`} aria-label={`Checklist: ${progress.done} of ${progress.total} done`}>
+          <SquareCheckCheckboxChecked aria-hidden="true" />{progress.done}/{progress.total}
+        </span>}
+        {pullCount > 0 && <span className="kb-card-count" aria-label={`${pullCount} pull request${pullCount === 1 ? '' : 's'}`}>
+          <PullRequestOpen aria-hidden="true" />{pullCount}
+        </span>}
+        {attachments.length > 0 && <span className="kb-card-count" aria-label={`${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`}>
           <Paperclip aria-hidden="true" />{attachments.length}
         </span>}
         <span className="kb-card-meta-spacer" />
@@ -419,6 +413,7 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, chip = false
 const BOARD_VIEW_OPTIONS = [
   { id: 'all', label: 'All' },
   { id: 'mine', label: 'Mine' },
+  { id: 'changed', label: 'Changed' },
   { id: 'unassigned', label: 'Unassigned' },
 ]
 
@@ -429,9 +424,10 @@ function BoardViewSwitch({ view, counts, onChange }) {
         <button
           key={option.id}
           type="button"
-          className="kb-view-option"
+          // Purple marks what is about you: your cards, and what changed since you looked.
+          className={`kb-view-option${(option.id === 'mine' || option.id === 'changed') && counts[option.id] > 0 ? ' is-you' : ''}`}
           aria-pressed={view === option.id}
-          aria-label={`${option.label === 'Mine' ? 'My cards' : `${option.label} cards`}, ${counts[option.id]}`}
+          aria-label={`${option.id === 'mine' ? 'My cards' : option.id === 'changed' ? 'Cards changed since you last looked' : `${option.label} cards`}, ${counts[option.id]}`}
           onClick={() => onChange(option.id)}
         >
           <span>{option.label}</span>
@@ -656,6 +652,9 @@ export default function Board({
   const [openCardId, setOpenCardId] = useState(null)
   const [draftCard, setDraftCard] = useState(null)
   const [previewAttachment, setPreviewAttachment] = useState(null)
+  // The picture viewer is the foremost dialog while open, so Escape closes the
+  // picture rather than the card underneath it.
+  const lightboxRef = useModalFocus(Boolean(previewAttachment), () => setPreviewAttachment(null))
   const [confirmDeleteCol, setConfirmDeleteCol] = useState(null)
   const [confirmDeleteCard, setConfirmDeleteCard] = useState(false)
   const [drag, setDrag] = useState(null)
@@ -667,6 +666,19 @@ export default function Board({
   const [filterText, setFilterText] = useState('')
   const [filterLabels, setFilterLabels] = useState([])
   const [boardView, setBoardView] = useState('all')
+  // On a phone one list fills the screen: the tab for the list in view is
+  // highlighted and carries that list's menu. A list's own header shows only
+  // while it is being renamed.
+  const [activeColumnId, setActiveColumnId] = useState(null)
+  const [renamingColumnId, setRenamingColumnId] = useState(null)
+  const listNavRef = useRef(null)
+  // What this person last saw on each card (fingerprints), or null until the
+  // first visit sets the baseline. `seenReady` turns true once it has loaded.
+  const [seenCards, setSeenCards] = useState(null)
+  const [seenReady, setSeenReady] = useState(false)
+  const seenRef = useRef(null)
+  const seenSaveRef = useRef(null)
+  const markSeenRef = useRef(() => {})
   const [assignmentLog, setAssignmentLog] = useState(null)
   const [assignmentUndo, setAssignmentUndo] = useState(null)
   const [switcherOpen, setSwitcherOpen] = useState(false)
@@ -689,7 +701,8 @@ export default function Board({
   const cardDetailsRef = useRef(null)
   const detailsCacheRef = useRef(new Map())
   const [savedTick, setSavedTick] = useState(0)
-  const [collapsedLists, setCollapsedLists] = useState(() => new Set())
+  // Personal fold choices on this board. Done starts folded until opened.
+  const [listFolds, setListFolds] = useState(() => ({ folded: new Set(), opened: new Set() }))
   const [columnDrag, setColumnDrag] = useState(null) // { columnId, dx, overIndex }
   // A description conflict waits for the owner's choice: a board refresh
   // never clears it (only opening another card or choosing does). The ref
@@ -898,32 +911,118 @@ export default function Board({
     if (isMe(ref)) return 'you'
     return assigneeLabelForCard({ assignee: ref.label || ref.host, assigneeHost: ref.host }) || ref.label || ref.host
   }
-  const cardVisible = card => cardMatchesView(card, boardView, me)
+  const cardVisible = card => cardMatchesView(card, boardView, me, changedIds)
     && cardMatchesFilters(card, filterText, filterLabels, assigneeLabelForCard(card))
   cardVisibleRef.current = cardVisible
 
   useEffect(() => {
     let active = true
     setBoardView('all')
-    setCollapsedLists(new Set())
+    setListFolds({ folded: new Set(), opened: new Set() })
+    seenRef.current = null
+    setSeenCards(null)
+    setSeenReady(false)
     loadUi().then(ui => {
       if (!active) return
       setBoardView(normalizeBoardView(ui?.boardViews?.[boardId]))
-      const folded = ui?.collapsedLists?.[boardId]
-      setCollapsedLists(new Set(Array.isArray(folded) ? folded.filter(id => typeof id === 'string') : []))
+      const ids = value => new Set(Array.isArray(value) ? value.filter(id => typeof id === 'string') : [])
+      setListFolds({ folded: ids(ui?.collapsedLists?.[boardId]), opened: ids(ui?.openedLists?.[boardId]) })
+      const seen = ui?.seenCards?.[boardId]
+      seenRef.current = seen && typeof seen === 'object' && !Array.isArray(seen) ? seen : null
+      setSeenCards(seenRef.current)
+      setSeenReady(true)
     }).catch(() => {})
-    return () => { active = false }
+    return () => {
+      active = false
+      // Leaving the board saves what was seen right away instead of waiting.
+      if (seenSaveRef.current) {
+        clearTimeout(seenSaveRef.current.timer)
+        seenSaveRef.current.save()
+        seenSaveRef.current = null
+      }
+    }
   }, [boardId])
 
-  const setListFolded = (columnId, folded) => {
-    setCollapsedLists(current => {
-      const next = new Set(current)
-      if (folded) next.add(columnId)
-      else next.delete(columnId)
-      saveCollapsedLists(boardId, [...next]).catch(error => {
+  // Seen fingerprints are saved shortly after they change, so opening several
+  // cards in a row is one write. Cards no longer on the board are dropped.
+  const rememberSeen = next => {
+    seenRef.current = next
+    setSeenCards(next)
+    if (seenSaveRef.current) clearTimeout(seenSaveRef.current.timer)
+    const forBoard = boardId
+    const save = () => saveSeenCards(forBoard, next).catch(error => {
+      window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'seen-cards' })
+    })
+    seenSaveRef.current = { save, timer: setTimeout(() => { seenSaveRef.current = null; save() }, 800) }
+  }
+
+  // The cards you open or change yourself count as seen.
+  markSeenRef.current = (cardIds, source = boardRef.current) => {
+    const current = seenRef.current
+    if (!current || !source || !cardIds.length) return
+    const prints = boardFingerprints(source)
+    if (!cardIds.some(id => prints[id] && current[id] !== prints[id])) return
+    const next = {}
+    for (const [id, print] of Object.entries(prints)) {
+      const seen = cardIds.includes(id) ? print : current[id]
+      if (seen !== undefined) next[id] = seen
+    }
+    rememberSeen(next)
+  }
+
+  const boardLoaded = Boolean(board)
+  const columnCount = board?.columns?.length || 0
+  useEffect(() => {
+    const scroller = boardScrollRef.current
+    if (!scroller) return undefined
+    let frame = 0
+    const update = () => {
+      frame = 0
+      const origin = scroller.getBoundingClientRect().left + parseFloat(getComputedStyle(scroller).paddingLeft || '0')
+      let nearest = null
+      let distance = Infinity
+      for (const lane of scroller.children) {
+        if (!lane.dataset?.colId) continue
+        const gap = Math.abs(lane.getBoundingClientRect().left - origin)
+        if (gap < distance) { distance = gap; nearest = lane.dataset.colId }
+      }
+      setActiveColumnId(nearest)
+    }
+    const onScroll = () => { if (!frame) frame = requestAnimationFrame(update) }
+    update()
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    return () => { scroller.removeEventListener('scroll', onScroll); cancelAnimationFrame(frame) }
+  }, [boardId, boardLoaded, columnCount])
+
+  // Keep the highlighted tab visible as you swipe between lists.
+  useEffect(() => {
+    if (!activeColumnId) return
+    listNavRef.current?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' })
+  }, [activeColumnId])
+
+  // The first visit to a board is the baseline: nothing counts as changed yet.
+  useEffect(() => {
+    if (seenReady && board && !seenRef.current) rememberSeen(boardFingerprints(board))
+  }, [seenReady, board])
+
+  const changedIds = useMemo(() => changedCardIds(board, seenCards), [board, seenCards])
+  // An open card stays seen, including changes made while it is open.
+  const openCardPrint = openCardId && board?.cards?.[openCardId]
+    ? cardFingerprint(board.cards[openCardId], board.columns.find(column => column.cardIds.includes(openCardId))?.id)
+    : ''
+  useEffect(() => {
+    if (openCardPrint) markSeenRef.current([openCardId])
+  }, [openCardId, openCardPrint, seenReady])
+
+  const setListFolded = (columnId, fold) => {
+    setListFolds(current => {
+      const folded = new Set(current.folded)
+      const opened = new Set(current.opened)
+      if (fold) { folded.add(columnId); opened.delete(columnId) } else { folded.delete(columnId); opened.add(columnId) }
+      saveListFolds(boardId, { folded: [...folded], opened: [...opened] }).catch(error => {
         window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'collapsed-lists' })
       })
-      return next
+      return { folded, opened }
     })
   }
 
@@ -1198,6 +1297,7 @@ export default function Board({
     if (alreadyQueued || (!entry && !runtimeOnline)) {
       boardRef.current = optimistic
       setBoard(optimistic)
+      markSeenRef.current([operation.cardId || operation.card?.id].filter(Boolean), optimistic)
       pendingRef.current += 1
       writeChain.current = writeChain.current.catch(() => {}).then(async () => {
         const count = await queueOperation(operation)
@@ -1213,6 +1313,8 @@ export default function Board({
 
     boardRef.current = optimistic
     setBoard(optimistic)
+    const ownCardIds = [operation.cardId || operation.card?.id].filter(Boolean)
+    markSeenRef.current(ownCardIds, optimistic)
     pendingRef.current += 1
     const onErr = e => {
       window.mobius?.signal?.('error', { message: String(e?.message || e), source: 'save' })
@@ -1224,6 +1326,7 @@ export default function Board({
         const landed = await createBoardRepository({ storage: window.mobius.storage }).mutate(boardId, operation, { sharedState: confirmedSharedRef.current })
         if (landed.authority === 'shared') confirmedSharedRef.current = rememberSharedState(confirmedSharedRef.current, shareRef.current, landed)
         settled = landed.doc
+        markSeenRef.current(ownCardIds, landed.doc)
         noteActivity(landed.activity)
         setSavedTick(tick => tick + 1)
         onCommit?.()
@@ -1876,10 +1979,45 @@ export default function Board({
     </>
   }
 
+  // One list menu, shown in each list's header and, on a phone, at the end of
+  // the list tabs for the list in view (the phone hides the list header).
+  const startRenameList = columnId => {
+    setRenamingColumnId(columnId)
+    requestAnimationFrame(() => boardScrollRef.current?.querySelector(`[data-col-id="${CSS.escape(columnId)}"] .kb-col-name`)?.select())
+  }
+  const listMenu = (col, columnIndex) => <MenuButton key={col.id} label={`List options for ${col.name}`} className="kb-col-menu">{({ page, setPage }) => page === 'colour' ? <>
+    <button type="button" className="kb-menu-back" data-keep-open onClick={() => setPage('main')}><ChevronLeft aria-hidden="true" />Back</button>
+    <div className="kb-menu-heading">List colour</div>
+    {LIST_COLOURS.map(([key, name]) => <button key={name} type="button" role="menuitemradio" aria-checked={(col.color || null) === key}
+      onClick={() => recolorColumn(col.id, key)}>
+      <span className="kb-chip-swatch" style={{ background: columnColor({ color: key }) }} aria-hidden="true" />
+      <span className="kb-menu-label">{name}</span>
+      {(col.color || null) === key && <Check aria-hidden="true" />}
+    </button>)}
+                </> : <>
+    <button type="button" role="menuitem" onClick={() => startRenameList(col.id)}>Rename list</button>
+    <button type="button" role="menuitem" data-keep-open aria-haspopup="menu" onClick={() => setPage('colour')}>
+      <span className="kb-menu-label">Change colour</span>
+      <span className="kb-chip-swatch" style={{ background: columnColor(col) }} aria-hidden="true" />
+    </button>
+    <button type="button" role="menuitem" onClick={() => setListFolded(col.id, true)}>Fold list</button>
+    <div className="kb-menu-separator" />
+    <button type="button" role="menuitem" disabled={columnIndex === 0} onClick={() => reorderColumn(col.id, -1)}>Move left</button>
+    <button type="button" role="menuitem" disabled={columnIndex === board.columns.length - 1} onClick={() => reorderColumn(col.id, 1)}>Move right</button>
+    <div className="kb-menu-separator" />
+    <button type="button" role="menuitem" className="kb-menu-danger"
+      aria-label={`Delete list ${col.name}`}
+      onClick={() => setConfirmDeleteCol(col.id)}
+    >Delete list…</button>
+                </>}</MenuButton>
+  const activeColumnIndex = Math.max(0, board.columns.findIndex(column => column.id === activeColumnId))
+  const activeColumn = board.columns[activeColumnIndex]
+
   const boardCards = board.columns.flatMap(column => column.cardIds.map(id => board.cards[id]).filter(Boolean))
   const viewCounts = {
     all: boardCards.length,
     mine: boardCards.filter(card => cardMatchesView(card, 'mine', me)).length,
+    changed: boardCards.filter(card => changedIds.has(card.id)).length,
     unassigned: boardCards.filter(card => cardMatchesView(card, 'unassigned', me)).length,
   }
   const isDraftCard = draftCard?.boardId === boardId && draftCard.card.id === openCardId
@@ -1950,6 +2088,10 @@ export default function Board({
         </button>
       </div>
       <div className="kb-divider" />
+      {boardView === 'changed' && changedIds.size > 0 && <div className="kb-view-note" role="status">
+        <span>{changedIds.size === 1 ? '1 card changed' : `${changedIds.size} cards changed`} since you last looked. Opening a card marks it as seen.</span>
+        <button type="button" className="kb-quiet-action" onClick={() => markSeenRef.current([...changedIds])}><Check aria-hidden="true" />Mark all as seen</button>
+      </div>}
       {availability.kind === 'terminal' && <div className="kb-recovery" role="alert">
         <span>{availability.message}</span>
       </div>}
@@ -1964,22 +2106,31 @@ export default function Board({
       {recoveryButton && <div className="kb-recovery" role="status">
         <span>{recoveredCount > 0 ? 'A recovery copy is ready to download.' : 'Unsynced edits are kept on this instance.'}</span>{recoveryButton}
       </div>}
-      {board.columns.length > 1 && <nav className="kb-list-nav" aria-label="Jump to list">
-        {board.columns.map(column => <button
-          key={column.id}
-          className="kb-list-jump"
-          aria-label={`Go to list ${column.name}`}
-          onClick={() => {
-            const lane = Array.from(boardScrollRef.current?.children || [])
-              .find(element => element.dataset.colId === column.id)
-            lane?.scrollIntoView({ block: 'nearest', inline: 'start', behavior: 'auto' })
-          }}
-        >
-          <span className="kb-col-status" aria-hidden="true" style={{ background: LABELS[column.color] || 'var(--muted)' }} />
-          <span className="kb-list-jump-name">{column.name}</span>
-          <span className="kb-list-jump-count">{column.cardIds.length}</span>
-        </button>)}
-      </nav>}
+      {board.columns.length > 1 && <div className="kb-list-bar">
+        <nav className="kb-list-nav" aria-label="Jump to list" ref={listNavRef}>
+          {board.columns.map(column => <button
+            key={column.id}
+            className="kb-list-jump"
+            aria-current={column.id === activeColumn?.id ? 'true' : undefined}
+            aria-label={`Go to list ${column.name}`}
+            onClick={() => {
+              // Going to a folded list opens it: a phone shows one list at a time.
+              if (listIsFolded(column, listFolds)) setListFolded(column.id, false)
+              setActiveColumnId(column.id)
+              requestAnimationFrame(() => {
+                const lane = Array.from(boardScrollRef.current?.children || [])
+                  .find(element => element.dataset.colId === column.id)
+                lane?.scrollIntoView({ block: 'nearest', inline: 'start', behavior: 'auto' })
+              })
+            }}
+          >
+            <span className="kb-col-status" aria-hidden="true" style={{ background: LABELS[column.color] || 'var(--muted)' }} />
+            <span className="kb-list-jump-name">{column.name}</span>
+            <span className="kb-list-jump-count">{column.cardIds.length}</span>
+          </button>)}
+        </nav>
+        {access.canWrite && activeColumn && <div className="kb-list-bar-menu">{listMenu(activeColumn, activeColumnIndex)}</div>}
+      </div>}
       {filtersOpen && <div className="kb-filterbar" aria-label="Card filters">
         <input
           className="kb-input kb-filter-input"
@@ -1995,7 +2146,7 @@ export default function Board({
             return <button
               key={name}
               className={`kb-filter-label-btn${active ? ' kb-on' : ''}`}
-              aria-label={name === 'none' ? 'Filter unlabeled cards' : `Filter ${name} cards`}
+              aria-label={name === 'none' ? 'Filter unlabeled cards' : `Filter ${labelDisplayName(name, board.labelNames)} cards`}
               aria-pressed={active}
               onClick={() => setFilterLabels(labels =>
                 labels.includes(name) ? labels.filter(label => label !== name) : [...labels, name],
@@ -2005,7 +2156,7 @@ export default function Board({
                 className={`kb-filter-dot${name === 'none' ? ' kb-none' : ''}`}
                 style={name === 'none' ? undefined : { background: color }}
               />
-              <span>{name === 'none' ? 'Unlabeled' : name}</span>
+              <span>{name === 'none' ? 'Unlabeled' : labelDisplayName(name, board.labelNames)}</span>
             </button>
           })}
         </div>
@@ -2029,7 +2180,7 @@ export default function Board({
               : dragOthers[columnDrag.overIndex]?.id === col.id ? ' kb-col-drop-before'
                 : columnDrag.overIndex >= dragOthers.length && dragOthers.at(-1)?.id === col.id ? ' kb-col-drop-after' : ''
           const columnDragStyle = columnDrag?.columnId === col.id ? { transform: `translateX(${columnDrag.dx}px) rotate(0.6deg)` } : null
-          if (collapsedLists.has(col.id)) return (
+          if (listIsFolded(col, listFolds)) return (
             <section
               key={col.id}
               data-col-id={col.id}
@@ -2055,6 +2206,9 @@ export default function Board({
             cardNodes.push(<Card
               key={card.id}
               card={card}
+              labelNames={board.labelNames}
+              mine={cardMatchesView(card, 'mine', me)}
+              changed={changedIds.has(card.id)}
               assigneeLabel={assigneeLabelForCard(card)}
               assigneeMember={collaboratorForHost(displayMembers, card.assigneeHost)}
               lifted={drag?.cardId === card.id && drag.moved}
@@ -2071,7 +2225,7 @@ export default function Board({
             <section
               key={col.id}
               data-col-id={col.id}
-              className={`kb-col${showGap ? ' kb-drop' : ''}${columnDragClass}`}
+              className={`kb-col${showGap ? ' kb-drop' : ''}${columnDragClass}${renamingColumnId === col.id ? ' is-renaming' : ''}`}
               style={{ '--kb-col-index': columnIndex, ...columnDragStyle }}
               aria-label={col.name}
             >
@@ -2087,35 +2241,14 @@ export default function Board({
                   key={`c-${col.id}-${col.name}`}
                   aria-label="List name"
                   readOnly={!access.canWrite}
-                  onBlur={e => { if (e.target.value.trim() && e.target.value !== col.name) renameColumn(col.id, e.target.value.trim()) }}
+                  onBlur={e => {
+                    setRenamingColumnId(null)
+                    if (e.target.value.trim() && e.target.value !== col.name) renameColumn(col.id, e.target.value.trim())
+                  }}
                   onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
                 />
                 <span className="kb-count">{narrowed ? `${cards.length}/${allCards.length}` : allCards.length}</span>
-                {access.canWrite && <MenuButton label={`List options for ${col.name}`} className="kb-col-menu">{({ page, setPage }) => page === 'colour' ? <>
-                  <button type="button" className="kb-menu-back" data-keep-open onClick={() => setPage('main')}><ChevronLeft aria-hidden="true" />Back</button>
-                  <div className="kb-menu-heading">List colour</div>
-                  {LIST_COLOURS.map(([key, name]) => <button key={name} type="button" role="menuitemradio" aria-checked={(col.color || null) === key}
-                    onClick={() => recolorColumn(col.id, key)}>
-                    <span className="kb-chip-swatch" style={{ background: columnColor({ color: key }) }} aria-hidden="true" />
-                    <span className="kb-menu-label">{name}</span>
-                    {(col.color || null) === key && <Check aria-hidden="true" />}
-                  </button>)}
-                </> : <>
-                  <button type="button" role="menuitem" onClick={() => requestAnimationFrame(() => boardScrollRef.current?.querySelector(`[data-col-id="${CSS.escape(col.id)}"] .kb-col-name`)?.select())}>Rename list</button>
-                  <button type="button" role="menuitem" data-keep-open aria-haspopup="menu" onClick={() => setPage('colour')}>
-                    <span className="kb-menu-label">Change colour</span>
-                    <span className="kb-chip-swatch" style={{ background: columnColor(col) }} aria-hidden="true" />
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => setListFolded(col.id, true)}>Fold list</button>
-                  <div className="kb-menu-separator" />
-                  <button type="button" role="menuitem" disabled={columnIndex === 0} onClick={() => reorderColumn(col.id, -1)}>Move left</button>
-                  <button type="button" role="menuitem" disabled={columnIndex === board.columns.length - 1} onClick={() => reorderColumn(col.id, 1)}>Move right</button>
-                  <div className="kb-menu-separator" />
-                  <button type="button" role="menuitem" className="kb-menu-danger"
-                    aria-label={`Delete list ${col.name}`}
-                    onClick={() => setConfirmDeleteCol(col.id)}
-                  >Delete list…</button>
-                </>}</MenuButton>}
+                {access.canWrite && listMenu(col, columnIndex)}
               </div>
               {access.canWrite && confirmDeleteCol === col.id && (
                 <div ref={columnConfirmRef} tabIndex={-1} className="kb-col-confirm" role="alertdialog" aria-modal="true" aria-label={`Delete list ${col.name}`}>
@@ -2134,6 +2267,7 @@ export default function Board({
                   <div className="kb-empty">{!allCards.length ? 'Nothing here yet'
                     : hasFilters ? 'No matching cards'
                       : boardView === 'mine' ? 'Nothing of yours here'
+                        : boardView === 'changed' ? 'Nothing changed here'
                         : 'Nothing unassigned here'}</div>
                 )}
               </div>
@@ -2151,9 +2285,6 @@ export default function Board({
           className="kb-card kb-ghost"
           style={{ left: drag.x - drag.dx, top: drag.y - drag.dy, width: drag.w }}
         >
-          {board.cards[drag.cardId]?.label !== 'none' && (
-            <div className="kb-label" style={{ background: LABELS[board.cards[drag.cardId]?.label] }} />
-          )}
           <div className="kb-card-title">{board.cards[drag.cardId]?.title}</div>
         </div>
       )}
@@ -2197,7 +2328,8 @@ export default function Board({
                 chip
                 onUpdate={patch => isDraftCard ? patchOpenCard(patch) : assignCard(openCard_.id, { label: patch.assignee, host: patch.assigneeHost })}
               />
-              <LabelChip label={openCard_.label} labels={LABELS} canWrite={access.canWrite} onChange={label => patchOpenCard({ label })} />
+              <LabelChip label={openCard_.label} labels={LABELS} names={board.labelNames} canWrite={access.canWrite}
+                onChange={label => patchOpenCard({ label })} onRename={(color, name) => mutate({ type: 'name-label', color, name })} />
               <DueChip due={openCard_.due} canWrite={access.canWrite} onChange={due => patchOpenCard({ due })} />
             </div>
 
@@ -2294,7 +2426,10 @@ export default function Board({
       {previewAttachment && (
         <>
           <div className="kb-scrim kb-lightbox-scrim" onClick={() => setPreviewAttachment(null)} />
-          <div className="kb-lightbox" role="dialog" aria-modal="true" aria-label={`Preview ${previewAttachment.name || 'image'}`}>
+          {/* The viewer box covers most of the screen above the backdrop, so a
+              tap anywhere except on the picture itself closes it. */}
+          <div ref={lightboxRef} tabIndex={-1} className="kb-lightbox" role="dialog" aria-modal="true" aria-label={`Preview ${previewAttachment.name || 'image'}`}
+            onClick={event => { if (!event.target.closest('.kb-lightbox-image')) setPreviewAttachment(null) }}>
             <button type="button" className="kb-btn kb-lightbox-close" onClick={() => setPreviewAttachment(null)}>Close</button>
             <AttachmentImage boardId={boardId} share={share} attachment={previewAttachment} className="kb-lightbox-image" alt={previewAttachment.name || 'Card image'} />
             <div className="kb-lightbox-caption">{previewAttachment.name || 'Image'}</div>

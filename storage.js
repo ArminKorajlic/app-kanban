@@ -13,7 +13,7 @@
 //   the fields it knows about. A newer app version's extra fields survive a
 //   round-trip through an older app version.
 
-import { COLUMN_COLOR_KEYS, defaultColumnColor, isIsoDate } from './domain.js'
+import { COLUMN_COLOR_KEYS, defaultColumnColor, isIsoDate, normalizeLabelNames } from './domain.js'
 import { cardPullUrls } from './operations.js'
 
 export const SCHEMA_V = 1
@@ -46,6 +46,8 @@ export function normalizeBoard(doc) {
   if (!Array.isArray(doc.columns)) doc.columns = []
   doc.columns = doc.columns.filter(col => col && typeof col === 'object' && !Array.isArray(col))
   if (!doc.cards || typeof doc.cards !== 'object' || Array.isArray(doc.cards)) doc.cards = {}
+  // Only boards that named a label carry labelNames; others stay unchanged.
+  if (doc.labelNames !== undefined) doc.labelNames = normalizeLabelNames(doc.labelNames)
   doc.columns.forEach((col, index) => {
     if (!Array.isArray(col.cardIds)) col.cardIds = []
     if (typeof col.name !== 'string') col.name = 'List'
@@ -155,18 +157,36 @@ export function saveBoardView(boardId, view) {
   return task
 }
 
-let collapsedListsChain = Promise.resolve()
+let listFoldsChain = Promise.resolve()
 
 // Folded lists are a personal viewing choice, remembered per board on this
-// Möbius and never written into a (shared) board.
-export function saveCollapsedLists(boardId, columnIds) {
-  const task = collapsedListsChain.catch(() => {}).then(() => updateDocument('ui.json', value => {
+// Möbius and never written into a (shared) board. `folded` lists were folded
+// by this person; `opened` lists were opened although they start folded (Done).
+export function saveListFolds(boardId, { folded, opened }) {
+  const task = listFoldsChain.catch(() => {}).then(() => updateDocument('ui.json', value => {
     const next = structuredClone(normalizeUi(value))
-    const folded = next.collapsedLists && typeof next.collapsedLists === 'object' && !Array.isArray(next.collapsedLists) ? next.collapsedLists : {}
-    next.collapsedLists = { ...folded, [boardId]: [...new Set(columnIds)] }
+    const perBoard = map => (map && typeof map === 'object' && !Array.isArray(map) ? map : {})
+    next.collapsedLists = { ...perBoard(next.collapsedLists), [boardId]: [...new Set(folded)] }
+    next.openedLists = { ...perBoard(next.openedLists), [boardId]: [...new Set(opened)] }
     return next
   }))
-  collapsedListsChain = task
+  listFoldsChain = task
+  return task
+}
+
+let seenCardsChain = Promise.resolve()
+
+// What this person last saw on each card of a board (card fingerprints). It is
+// personal, kept on this Möbius for all of the owner's devices, and never
+// written into a shared board.
+export function saveSeenCards(boardId, fingerprints) {
+  const task = seenCardsChain.catch(() => {}).then(() => updateDocument('ui.json', value => {
+    const next = structuredClone(normalizeUi(value))
+    const seen = next.seenCards && typeof next.seenCards === 'object' && !Array.isArray(next.seenCards) ? next.seenCards : {}
+    next.seenCards = { ...seen, [boardId]: fingerprints }
+    return next
+  }))
+  seenCardsChain = task
   return task
 }
 

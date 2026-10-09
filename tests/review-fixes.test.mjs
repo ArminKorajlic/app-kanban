@@ -301,7 +301,8 @@ test('component-level viewer and keyboard contract gates writes, reorders, and m
   assert.doesNotMatch(boardSource, /<select/)
   assert.match(boardSource, /<BoardPresence members=\{displayMembers\}/)
   assert.match(boardSource, /await onRefreshMembers\?\.\(\)/)
-  assert.match(boardSource, /kb-card-notes/)
+  // Board cards show the title and one details row; the description lives in the open card.
+  assert.doesNotMatch(boardSource.slice(boardSource.indexOf('function Card('), boardSource.indexOf('function memberRecords(')), /card\.notes|kb-card-notes/)
   assert.match(partsSource, /Add attachment/)
   assert.match(boardSource, /onPaste=\{attachFromPaste\}/)
   assert.match(boardSource, /consumeAttachmentPaste/)
@@ -329,7 +330,8 @@ test('card-title links open directly and pull-request status stays informational
   const boardSource = await readFile(new URL('../ui/Board.jsx', import.meta.url), 'utf8')
   const themeSource = await readFile(new URL('../theme.js', import.meta.url), 'utf8')
   const storageSource = await readFile(new URL('../storage.js', import.meta.url), 'utf8')
-  assert.match(boardSource, /className="kb-card-title"><LinkifiedText text=\{card\.title\}/)
+  // The title area may start with the "changed" dot; the title itself stays a linkified title.
+  assert.match(boardSource, /className="kb-card-title">[^]{0,200}?<LinkifiedText text=\{card\.title\}/)
   assert.match(boardSource, /if \(!e\.target\.closest\('a'\)\) onDragStart/)
   assert.match(boardSource, /pullRequestStatus\(response\.status/)
   const partsSource = await readFile(new URL('../ui/CardParts.jsx', import.meta.url), 'utf8')

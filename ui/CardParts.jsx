@@ -4,12 +4,12 @@
 // attachments, and Activity folded away.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Calendar, Check, ChevronDown, DotsHorizontal, ExternalLink, Paperclip, Pencil, Plus, Reload, Trash } from '@openai/apps-sdk-ui/components/Icon'
+import { Calendar, Check, ChevronDown, ChevronLeft, DotsHorizontal, Paperclip, Pencil, Plus, PullRequestClosed, PullRequestDraft, PullRequestMerged, PullRequestOpen, Reload, Trash } from '@openai/apps-sdk-ui/components/Icon'
 import { useModalFocus } from './modalFocus.js'
 import { describeActivity } from '../activity.js'
 import { describeAssignmentEvent, restorableAssignment } from '../assignment.js'
 import { isPreviewImage, loadCardAttachment, MAX_CARD_ATTACHMENTS } from '../attachments.js'
-import { checklistProgress, dueDateStatus, formatDueDate } from '../domain.js'
+import { checklistProgress, dueDateStatus, formatDueDate, labelDisplayName, MAX_LABEL_NAME_CHARS, shortLinkText } from '../domain.js'
 import { cardPullUrls } from '../operations.js'
 import { parsePullRequestUrl } from '../prMatching.js'
 
@@ -34,7 +34,10 @@ export function linkifiedParts(text) {
   })
 }
 
-export function LinkifiedText({ text }) {
+// `compactLinks` shortens what a link shows. Use it only where the text is
+// displayed, never inside an editor whose text is saved back (the description
+// editor reads its own text on blur, so a shortened link would be saved).
+export function LinkifiedText({ text, compactLinks = false }) {
   return linkifiedParts(text).map((part, index) => {
     if (!part.href) return part.text
     return (
@@ -43,10 +46,11 @@ export function LinkifiedText({ text }) {
         href={part.href}
         target="_blank"
         rel="noreferrer"
+        title={compactLinks ? part.href : undefined}
         onClick={event => event.stopPropagation()}
         onKeyDown={event => event.stopPropagation()}
       >
-        {part.text}
+        {compactLinks ? shortLinkText(part.href) : part.text}
       </a>
     )
   })
@@ -283,28 +287,40 @@ export function StatusPill({ columns, columnId, colorFor, canWrite, onMove }) {
 
 // ---- details row: label and due date (assignee lives with the people picker) ----
 
-export function LabelChip({ label, labels, canWrite, onChange }) {
+// Labels are chosen here, and named here too: the names belong to the board,
+// so naming "red" as "Urgent" names it on every card.
+export function LabelChip({ label, labels, names, canWrite, onChange, onRename }) {
   const { rootRef, menuRef, open, setOpen, toggle, layer, menuClass } = usePopover()
+  const [page, setPage] = useState('choose')
+  useEffect(() => { if (open) setPage('choose') }, [open])
+  useEffect(() => {
+    if (open) menuRef.current?.querySelector(page === 'names' ? 'input' : 'button')?.focus()
+  }, [page])
   const current = label && label !== 'none' && labels[label] ? label : ''
   if (!canWrite && !current) return null
   const choose = name => { onChange(name); setOpen(false) }
+  const commitName = (color, input) => {
+    const name = input.value.trim()
+    if (name !== (names?.[color] || '')) onRename(color, name)
+  }
+  const colors = Object.entries(labels).filter(([name]) => name !== 'none')
   return <div className="kb-chip-wrap" ref={rootRef}>
     <button
       type="button"
       className={`kb-detail-chip${current ? '' : ' is-empty'}`}
       aria-haspopup="menu"
       aria-expanded={open}
-      aria-label={current ? `Label: ${current}. Change label` : 'Add label'}
+      aria-label={current ? `Label: ${labelDisplayName(current, names)}. Change label` : 'Add label'}
       disabled={!canWrite}
       onClick={toggle}
     >
       {current
-        ? <><span className="kb-chip-swatch" style={{ background: labels[current] }} aria-hidden="true" />{capitalize(current)}</>
+        ? <><span className="kb-chip-swatch" style={{ background: labels[current] }} aria-hidden="true" />{labelDisplayName(current, names)}</>
         : <><Plus aria-hidden="true" />Add label</>}
     </button>
-    {open && layer(<div ref={menuRef} className={menuClass} role="menu" aria-label="Choose label">
+    {open && page === 'choose' && layer(<div ref={menuRef} className={menuClass} role="menu" aria-label="Choose label">
       <div className="kb-menu-heading">Label</div>
-      {Object.entries(labels).filter(([name]) => name !== 'none').map(([name, color]) => <button
+      {colors.map(([name, color]) => <button
         key={name}
         type="button"
         role="menuitemradio"
@@ -312,10 +328,29 @@ export function LabelChip({ label, labels, canWrite, onChange }) {
         onClick={() => choose(name)}
       >
         <span className="kb-chip-swatch" style={{ background: color }} aria-hidden="true" />
-        <span className="kb-menu-label">{capitalize(name)}</span>
+        <span className={`kb-menu-label${names?.[name] ? '' : ' is-unnamed'}`}>{labelDisplayName(name, names)}</span>
         {current === name && <Check aria-hidden="true" />}
       </button>)}
-      {current && <><div className="kb-menu-separator" /><button type="button" role="menuitem" className="kb-menu-danger" onClick={() => choose('none')}>Remove label</button></>}
+      <div className="kb-menu-separator" />
+      <button type="button" role="menuitem" onClick={() => setPage('names')}><Pencil aria-hidden="true" /><span className="kb-menu-label">Edit label names</span></button>
+      {current && <button type="button" role="menuitem" className="kb-menu-danger" onClick={() => choose('none')}>Remove label</button>}
+    </div>)}
+    {open && page === 'names' && layer(<div ref={menuRef} className={`${menuClass} kb-label-names`} role="dialog" aria-label="Label names">
+      <button type="button" className="kb-menu-back" onClick={() => setPage('choose')}><ChevronLeft aria-hidden="true" />Back</button>
+      <div className="kb-menu-heading">Label names for this board</div>
+      {colors.map(([name, color]) => <label className="kb-label-name-row" key={name}>
+        <span className="kb-chip-swatch" style={{ background: color }} aria-hidden="true" />
+        <input
+          className="kb-input"
+          defaultValue={names?.[name] || ''}
+          placeholder={capitalize(name)}
+          maxLength={MAX_LABEL_NAME_CHARS}
+          aria-label={`Name for the ${name} label`}
+          onBlur={event => commitName(name, event.currentTarget)}
+          onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } }}
+        />
+      </label>)}
+      <p className="kb-label-names-hint">Everyone on this board sees these names. Leave one empty to keep just the colour.</p>
     </div>)}
   </div>
 }
@@ -503,7 +538,7 @@ export function ChecklistSection({ checklist, canWrite, onAdd, onToggle, onDelet
   return <CardSection title="Checklist" meta={meta}>
     {visible.length > 0 && <div className="kb-checklist">
       {visible.map(item => (
-        <div className="kb-check-item" key={item.id}>
+        <div className={`kb-check-item${editingItem?.id === item.id ? ' is-editing' : ''}`} key={item.id}>
           <div className="kb-check-toggle">
             <input type="checkbox" checked={item.done} aria-label={item.text} disabled={!canWrite} onChange={() => onToggle(item.id)} />
             {editingItem?.id === item.id ? (
@@ -517,14 +552,27 @@ export function ChecklistSection({ checklist, canWrite, onAdd, onToggle, onDelet
                 onBlur={() => saveItem(item)}
                 onKeyDown={handleEditKey}
               />
+            ) : canWrite ? (
+              // Not a <button>: the item's links must stay clickable inside it.
+              <span role="button" tabIndex={0} className={`kb-check-text ${item.done ? 'kb-check-done' : ''}`}
+                onClick={() => setEditingItem({ id: item.id, text: item.text })}
+                onKeyDown={event => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return
+                  event.preventDefault()
+                  setEditingItem({ id: item.id, text: item.text })
+                }}>
+                <LinkifiedText text={item.text} compactLinks />
+              </span>
             ) : (
-              <button type="button" className={`kb-check-text ${item.done ? 'kb-check-done' : ''}`}
-                onClick={() => { if (canWrite) setEditingItem({ id: item.id, text: item.text }) }}>
-                {item.text}
-              </button>
+              <span className={`kb-check-text ${item.done ? 'kb-check-done' : ''}`}><LinkifiedText text={item.text} compactLinks /></span>
             )}
           </div>
-          {canWrite && <button className="kb-iconbtn kb-check-delete" aria-label={`Delete checklist item ${item.text}`} onClick={() => onDelete(item.id)}><Trash /></button>}
+          {/* On touch screens the bin shows only while the item is being
+              edited. Pressing it must not blur the editor first, or the
+              edit would close and hide the bin before the tap lands. */}
+          {canWrite && <button className="kb-iconbtn kb-check-delete" aria-label={`Delete checklist item ${item.text}`}
+            onMouseDown={event => event.preventDefault()}
+            onClick={() => { setEditingItem(null); onDelete(item.id) }}><Trash /></button>}
         </div>
       ))}
     </div>}
@@ -550,21 +598,26 @@ export function ChecklistSection({ checklist, canWrite, onAdd, onToggle, onDelet
   </CardSection>
 }
 
-// ---- pull requests: one line each ----
+// ---- pull requests: one line each, named by their GitHub title ----
 
-function pullRequestShortLabel(url) {
-  const pull = parsePullRequestUrl(url)
-  if (pull) return `#${pull.number}`
-  try { return new URL(url).hostname } catch { return 'Link' }
-}
+export const PULL_REQUEST_PREVIEW_ITEMS = 2
 
 function pullRequestTitle(url) {
   const pull = parsePullRequestUrl(url)
   return pull ? `${pull.owner}/${pull.repo} #${pull.number}` : url
 }
 
+function pullRequestReference(url) {
+  const pull = parsePullRequestUrl(url)
+  if (pull) return `${pull.repo} #${pull.number}`
+  try { return new URL(url).hostname } catch { return 'Link' }
+}
+
+const PULL_REQUEST_ICONS = { open: PullRequestOpen, draft: PullRequestDraft, merged: PullRequestMerged, closed: PullRequestClosed }
+
 // Statuses are keyed by URL. Offline, nothing new is fetched: a card keeps its
 // last known status, and a link never checked (or not a GitHub PR) shows none.
+// Until a title arrives, a line is named by its repository and number.
 export function PullRequestSection({ card, canWrite, online, statuses, onUpdate, onRefresh }) {
   const urls = cardPullUrls(card)
   const statusFor = url => (parsePullRequestUrl(url) ? statuses[url] || (online ? { label: 'Checking…', tone: 'unknown' } : null) : null)
@@ -572,11 +625,13 @@ export function PullRequestSection({ card, canWrite, online, statuses, onUpdate,
   const [editor, setEditor] = useState(null)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState('')
-  useEffect(() => { setEditor(null); setDraft(''); setError('') }, [card.id])
+  const [expanded, setExpanded] = useState(false)
+  useEffect(() => { setEditor(null); setDraft(''); setError(''); setExpanded(false) }, [card.id])
   if (!urls.length && !canWrite) return null
   const save = () => {
     if (!parsePullRequestUrl(draft)) { setError('Use a GitHub pull request link, like https://github.com/owner/repo/pull/123'); return }
     onUpdate(editor === 'add' ? null : editor, draft.trim())
+    if (editor === 'add' && urls.length >= PULL_REQUEST_PREVIEW_ITEMS) setExpanded(true)
     setEditor(null); setDraft(''); setError('')
   }
   const cancel = () => { setEditor(null); setDraft(''); setError('') }
@@ -589,36 +644,50 @@ export function PullRequestSection({ card, canWrite, online, statuses, onUpdate,
     <button type="button" className="kb-btn kb-btn-quiet" onClick={cancel}>Cancel</button>
   </form>
   const canRefresh = online && urls.some(parsePullRequestUrl)
-  return <section className="kb-section kb-pr-section" aria-label="Pull requests">
-    {urls.map((url, index) => {
+
+  // No pull request yet: one line, heading on the left and the add action on the right.
+  if (!urls.length) return <section className="kb-section kb-pr-section" aria-label="Pull request">
+    {editor === 'add' ? <>
+      <div className="kb-section-head"><h3>Pull request</h3></div>
+      {form('Add')}
+    </> : <div className="kb-pr-empty">
+      <h3>Pull request</h3>
+      <button type="button" className="kb-detail-chip is-empty" onClick={() => { setEditor('add'); setDraft('') }}><Plus aria-hidden="true" />Add pull request</button>
+    </div>}
+    {error && <p className="kb-attachment-error" role="alert">{error}</p>}
+  </section>
+
+  const visible = expanded ? urls : urls.slice(0, PULL_REQUEST_PREVIEW_ITEMS)
+  const hidden = urls.length - PULL_REQUEST_PREVIEW_ITEMS
+  const title = urls.length > 1 ? 'Pull requests' : 'Pull request'
+  return <CardSection title={title} className="kb-pr-section"
+    meta={urls.length > 1 && <span className="kb-section-count">{urls.length}</span>}>
+    {visible.map(url => {
       const status = statusFor(url)
       if (editor === url) return <div key={url}>
         {form('Save')}
         <button type="button" className="kb-quiet-action kb-menu-danger" onClick={() => { onUpdate(url, ''); cancel() }}><Trash aria-hidden="true" />Remove this pull request</button>
       </div>
+      const Icon = PULL_REQUEST_ICONS[status?.tone] || PullRequestOpen
       return <div className="kb-pr-line" key={url}>
-        <h3 className={index ? 'kb-visually-hidden' : ''}>Pull request</h3>
-        <span className="kb-pr-right">
-          <a className="kb-pr-link" href={url} target="_blank" rel="noreferrer" title={`Open ${pullRequestTitle(url)}`}>
-            {pullRequestShortLabel(url)}<ExternalLink aria-hidden="true" />
-          </a>
-          {status && <span className={`kb-pr-status kb-pr-status-${status.tone}`}>{status.label}</span>}
-          {canWrite && <button type="button" className="kb-iconbtn kb-pr-edit" aria-label={`Change or remove ${pullRequestTitle(url)}`} title="Change or remove" onClick={() => { setEditor(url); setDraft(url) }}><Pencil /></button>}
-        </span>
+        <Icon className="kb-pr-icon" aria-hidden="true" />
+        <a className="kb-pr-link" href={url} target="_blank" rel="noreferrer" title={`Open ${pullRequestTitle(url)} on GitHub`}>
+          <span className="kb-pr-name">{status?.title || pullRequestTitle(url)}</span>
+          {status?.title && <span className="kb-pr-ref">{pullRequestReference(url)}</span>}
+        </a>
+        {status && <span className={`kb-pr-status kb-pr-status-${status.tone}`}>{status.label}</span>}
+        {canWrite && <button type="button" className="kb-iconbtn kb-pr-edit" aria-label={`Change or remove ${pullRequestTitle(url)}`} title="Change or remove" onClick={() => { setEditor(url); setDraft(url) }}><Pencil /></button>}
       </div>
     })}
-    {!urls.length && editor !== 'add' && <div className="kb-pr-line">
-      <h3>Pull request</h3>
-      <span className="kb-pr-right"><button type="button" className="kb-detail-chip is-empty" onClick={() => { setEditor('add'); setDraft('') }}><Plus aria-hidden="true" />Add pull request</button></span>
-    </div>}
-    {editor === 'add' && <>{!urls.length && <div className="kb-pr-line"><h3>Pull request</h3></div>}{form('Add')}</>}
-    {urls.length > 0 && editor === null && (canWrite || canRefresh) && <div className="kb-section-actions">
-      {canWrite && <button type="button" className="kb-quiet-action" onClick={() => { setEditor('add'); setDraft('') }}><Plus aria-hidden="true" />Add another</button>}
+    {editor === 'add' && form('Add')}
+    {editor === null && (hidden > 0 || canWrite || canRefresh) && <div className="kb-section-actions">
+      {hidden > 0 && <ShowMore expanded={expanded} onToggle={() => setExpanded(value => !value)} more={`Show ${hidden} more`} less="Show fewer" />}
+      {canWrite && <button type="button" className="kb-quiet-action" onClick={() => { setEditor('add'); setDraft('') }}><Plus aria-hidden="true" />Add pull request</button>}
       {canRefresh && <button type="button" className="kb-iconbtn kb-pr-refresh" aria-label="Refresh pull request statuses" title="Refresh statuses" onClick={onRefresh}><Reload /></button>}
     </div>}
     {hints.map(hint => <p className="kb-pr-hint" key={hint}>{hint}</p>)}
     {error && <p className="kb-attachment-error" role="alert">{error}</p>}
-  </section>
+  </CardSection>
 }
 
 // ---- attachments ----

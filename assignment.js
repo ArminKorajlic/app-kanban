@@ -7,7 +7,7 @@
 // change. Changes that arrive without an entry (an older Kanban, or an agent
 // edit) are noticed locally and kept beside the board, never in it.
 
-export const BOARD_VIEWS = ['all', 'mine', 'unassigned']
+export const BOARD_VIEWS = ['all', 'mine', 'changed', 'unassigned']
 export const ASSIGNMENT_HISTORY_LIMIT = 20
 export const OBSERVED_ASSIGNMENT_LIMIT = 200
 
@@ -49,9 +49,11 @@ export function isAssignedToMe(card, me) {
   return Boolean(label) && names.has(label.replace(/^@/u, '').toLocaleLowerCase())
 }
 
-export function cardMatchesView(card, view, me) {
+// `changed` holds the ids of cards changed since this person last looked.
+export function cardMatchesView(card, view, me, changed = new Set()) {
   switch (normalizeBoardView(view)) {
     case 'mine': return isAssignedToMe(card, me)
+    case 'changed': return changed.has(card.id)
     case 'unassigned': return !hasAssignment(cardAssignment(card))
     default: return true
   }
