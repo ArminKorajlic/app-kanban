@@ -144,11 +144,16 @@ export function deleteChecklistItem(checklist, itemId) {
   return safeChecklist(checklist).filter(item => !item || item.id !== itemId)
 }
 
-export function cardMatchesFilters(card, text = '', labels = []) {
+// `assigneeLabel` is the name the board shows for the card's owner (for example
+// a verified @handle), so text search finds people the way they appear.
+export function cardMatchesFilters(card, text = '', labels = [], assigneeLabel = '') {
   if (!card || typeof card !== 'object') return false
   const query = String(text || '').trim().toLocaleLowerCase()
   if (query) {
-    const haystack = `${typeof card.title === 'string' ? card.title : ''}\n${typeof card.notes === 'string' ? card.notes : ''}`.toLocaleLowerCase()
+    const haystack = [card.title, card.notes, card.assignee, assigneeLabel]
+      .filter(value => typeof value === 'string' && value)
+      .join('\n')
+      .toLocaleLowerCase()
     if (!haystack.includes(query)) return false
   }
   const activeLabels = Array.isArray(labels) ? labels : []
@@ -190,4 +195,57 @@ export function cardAssigneeLabel(card, members = []) {
   if (name.startsWith('@')) return name
   if (saved.startsWith('@')) return saved
   return name || saved
+}
+
+// A shared board's host refuses a document larger than this (MAX_DOC in
+// collaboration/service.py), and every edit resends the whole document.
+export const SHARED_BOARD_LIMIT_BYTES = 256 * 1024
+// From this share of the limit the board warns that it is nearly full.
+export const BOARD_NEARLY_FULL_SHARE = 0.95
+
+// The size the host measures: Python's json.dumps defaults, i.e. ", " and
+// ": " separators and every non-ASCII character escaped as \uXXXX (two
+// escapes for characters outside the Basic Multilingual Plane).
+export function hostDocumentBytes(value) {
+  if (value === null || value === undefined) return 4
+  if (typeof value === 'boolean') return value ? 4 : 5
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value).length : 4
+  if (typeof value === 'string') {
+    let bytes = 2
+    for (const char of value) {
+      const code = char.codePointAt(0)
+      if (code > 0xffff) bytes += 12
+      else if (code > 0x7e) bytes += 6
+      else if (code === 0x22 || code === 0x5c || code === 0x08 || code === 0x0c || code === 0x0a || code === 0x0d || code === 0x09) bytes += 2
+      else if (code < 0x20) bytes += 6
+      else bytes += 1
+    }
+    return bytes
+  }
+  if (Array.isArray(value)) {
+    if (!value.length) return 2
+    return 2 + value.reduce((sum, item) => sum + hostDocumentBytes(item), 0) + (value.length - 1) * 2
+  }
+  const entries = Object.entries(value).filter(([, item]) => item !== undefined)
+  if (!entries.length) return 2
+  return 2 + entries.reduce((sum, [key, item]) => sum + hostDocumentBytes(key) + 2 + hostDocumentBytes(item), 0) + (entries.length - 1) * 2
+}
+
+// A shared board's host also stores at most this many attachment files, and
+// this many bytes of them (collaboration/service.py, asset-write).
+export const SHARED_BOARD_FILE_LIMIT = 100
+export const SHARED_BOARD_FILE_BYTES = 100 * 1024 * 1024
+
+// Text and files fill up separately; whichever is closer to its limit decides.
+export function boardCapacity(doc) {
+  const bytes = hostDocumentBytes(doc)
+  const files = Object.values(doc?.cards || {}).flatMap(card => (Array.isArray(card?.attachments) ? card.attachments : []))
+  const fileBytes = files.reduce((sum, file) => sum + (Number.isFinite(file?.size) ? file.size : 0), 0)
+  const share = bytes / SHARED_BOARD_LIMIT_BYTES
+  const fileShare = Math.max(files.length / SHARED_BOARD_FILE_LIMIT, fileBytes / SHARED_BOARD_FILE_BYTES)
+  return {
+    bytes, limit: SHARED_BOARD_LIMIT_BYTES, share, nearlyFull: share >= BOARD_NEARLY_FULL_SHARE,
+    files: files.length, fileLimit: SHARED_BOARD_FILE_LIMIT, fileBytes, fileShare,
+    filesNearlyFull: fileShare >= BOARD_NEARLY_FULL_SHARE,
+  }
 }

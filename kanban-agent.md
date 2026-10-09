@@ -18,7 +18,11 @@ uses the current turn's credentials internally; never print them.
    healthy boards remain usable. Do not treat that entry as a missing/private
    board or invent its columns. Retry `read BOARD_ID` when its authority is
    reachable. Failure to list the board directory still fails the command.
-2. `read BOARD_ID` returns the authoritative board, including its cards.
+2. `read BOARD_ID` returns the authoritative board, including its cards. On a
+   shared board a long description stays beside the board: such a card has
+   `notesLength` and only a preview in `notes`. `read-card BOARD_ID CARD_ID`
+   returns that card with its full description plus its activity (who changed
+   what, when). Edits made through this helper are recorded as the agent's.
 3. Choose the intended board/column from those results, not guessed filenames.
    If several boards genuinely match, ask rather than silently picking the first.
 4. Send one operation as JSON on stdin. Generate arbitrary text with a JSON

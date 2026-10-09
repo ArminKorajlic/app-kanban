@@ -1,25 +1,42 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, ChevronLeft, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, Reload, Share, Trash, User } from '@openai/apps-sdk-ui/components/Icon'
-import { uid, subscribeBoard, getBoard, boardPath, normalizeBoard } from '../storage.js'
+import { Check, ChevronDown, ChevronLeft, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, Share, Trash, User, X } from '@openai/apps-sdk-ui/components/Icon'
+import { uid, subscribeBoard, getBoard, boardPath, normalizeBoard, loadUi, saveBoardView, saveCollapsedLists, loadAssignmentLog, subscribeAssignmentLog, updateAssignmentLog } from '../storage.js'
+import {
+  assignmentRef,
+  cardAssignment,
+  cardAssignmentTimeline,
+  cardMatchesView,
+  createAssignmentEvent,
+  hasAssignment,
+  isAssignedToMe,
+  nextAssignmentLog,
+  normalizeBoardView,
+  sameAssignment,
+} from '../assignment.js'
 import { loadMemberAvatar, resolveMemberHandles, pullShared, createInvite, inviteByHandle, getMembers, revokeCollaborator, groupCollaborators, collaboratorForHost, selfCollaborator, inviteDeliveryNotice, shareBoard, cacheSubscriptionIsAuthoritative, rememberSharedState, sharedBoardPollDelay, acceptSharedPoll, createSharedRefreshLifecycle } from '../sync.js'
-import { applyBoardOp, columnMoveAnchor, cardPullUrls } from '../operations.js'
+import { applyBoardOp, columnMoveAnchor, cardPullUrls, hasExternalNotes } from '../operations.js'
+import { mergeActivity, MAX_NOTES_CHARS } from '../activity.js'
 import { parsePullRequestUrl, pullRequestStatus } from '../prMatching.js'
 import { acknowledgeRecoveredBoardOps, applyPendingBoardOps, enqueuePendingBoardOp, readPendingBoardOps, readRecoveredBoardOps, exportUnsyncedBoardOps, replayPendingBoardOps, hasRecoverableBoardOps } from '../pendingOps.js'
 import { createBoardRepository, isRetryableBoardError, replayOutcomeForBoardError } from '../boardRepository.js'
 import {
   deleteCardAttachment,
   consumeAttachmentPaste,
-  isPreviewImage,
   loadCardAttachment,
   MAX_CARD_ATTACHMENTS,
   saveCardAttachment,
 } from '../attachments.js'
 import { useModalFocus } from './modalFocus.js'
 import {
+  AttachmentImage, AttachmentsSection, CardActivity, cardTimeline, ChecklistSection, DescriptionSection, DueChip, dueTone,
+  InlineCardText, LabelChip, LinkifiedText, MenuButton, PullRequestSection, SavedIndicator, StatusPill,
+} from './CardParts.jsx'
+import {
   assigneeAvatar,
   cardAssigneeLabel,
   boardAccess,
+  boardCapacity,
   cardMatchesFilters,
   checklistProgress,
   defaultColumnColor,
@@ -38,29 +55,16 @@ export const LABELS = {
   pink: 'var(--kb-label-pink, #ec4899)',
 }
 
-function AttachmentImage({ boardId, share, attachment, className, alt = '' }) {
-  const [src, setSrc] = useState('')
-  const [failed, setFailed] = useState(false)
-  useEffect(() => {
-    let alive = true
-    setSrc(''); setFailed(false)
-    loadCardAttachment({ boardId, share, attachment }).then(value => {
-      if (alive) setSrc(value)
-    }).catch(() => { if (alive) setFailed(true) })
-    return () => { alive = false }
-  }, [boardId, share?.host, share?.oid, attachment.id, attachment.path])
-  if (failed) return <span className={`${className} kb-image-missing`} role="img" aria-label="Image unavailable" />
-  if (!src) return <span className={`${className} kb-image-loading`} aria-hidden="true" />
-  return <img className={className} src={src} alt={alt} />
-}
-
-function Card({ boardId, share, card, assigneeLabel, assigneeMember, lifted, onOpen, onDragStart, canWrite }) {
+// Every card on the board has the same shape: a label strip (space kept when
+// there is no label), a title of at most two lines, one line of description,
+// and a details row. Pictures stay inside the card; the tile counts them.
+function Card({ card, assigneeLabel, assigneeMember, lifted, onOpen, onDragStart, canWrite }) {
   const dueStatus = dueDateStatus(card.due)
   const progress = checklistProgress(card.checklist)
   const assignee = (assigneeLabel ?? card.assignee)?.trim()
-  const notePreview = String(card.notes || '').trim()
+  const notePreview = String(card.notes || '').split('\n').map(line => line.trim()).find(Boolean) || ''
   const attachments = card.attachments || []
-  const cover = attachments.find(isPreviewImage)
+  const labelled = card.label && card.label !== 'none'
   return (
     <div
       className={`kb-card${lifted ? ' kb-lifted' : ''}${canWrite ? '' : ' kb-readonly'}`}
@@ -68,31 +72,18 @@ function Card({ boardId, share, card, assigneeLabel, assigneeMember, lifted, onO
       onPointerDown={canWrite ? e => { if (!e.target.closest('a')) onDragStart(e, card.id) } : undefined}
     >
       <button type="button" className="kb-card-open" aria-label={`Open card details: ${card.title}`} onClick={() => onOpen(card.id)} />
-      {card.label && card.label !== 'none' && (
-        <div
+      <div className="kb-label-slot">
+        {labelled && <div
           className="kb-label"
           style={{ background: LABELS[card.label] || LABELS.none }}
           role="img"
           aria-label={`${card.label} label`}
-        />
-      )}
-      {cover && <div className="kb-card-cover-wrap">
-        <AttachmentImage
-          boardId={boardId}
-          share={share}
-          attachment={cover}
-          className="kb-card-cover"
-          alt=""
-        />
-        {attachments.length > 1 && <span className="kb-card-image-count">+{attachments.length - 1}</span>}
-      </div>}
+        />}
+      </div>
       <div className="kb-card-title"><LinkifiedText text={card.title} /></div>
-      {notePreview && <div className="kb-card-notes">{notePreview}</div>}
-      {!cover && attachments.length > 0 && <div className="kb-card-attachment-summary">
-        <Paperclip aria-hidden="true" /> {attachments.length} {attachments.length === 1 ? 'file' : 'files'}
-      </div>}
-      {(dueStatus || progress.total > 0 || assignee) && <div className="kb-card-meta">
-        {dueStatus && <span className={`kb-due kb-due-${dueStatus}`}>{formatDueDate(card.due)}</span>}
+      <div className="kb-card-notes">{notePreview}</div>
+      <div className="kb-card-meta">
+        {dueStatus && <span className={`kb-due kb-due-${dueStatus} kb-due-tone-${dueTone(card.due)}`}>{formatDueDate(card.due)}</span>}
         {progress.total > 0 && <div className="kb-check-progress">
           <span>{progress.done}/{progress.total}</span>
           <span
@@ -106,9 +97,12 @@ function Card({ boardId, share, card, assigneeLabel, assigneeMember, lifted, onO
             <span className="kb-progress-fill" style={{ width: `${progress.percent}%` }} />
           </span>
         </div>}
+        {attachments.length > 0 && <span className="kb-card-attachment-summary" aria-label={`${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`}>
+          <Paperclip aria-hidden="true" />{attachments.length}
+        </span>}
         <span className="kb-card-meta-spacer" />
         {assignee && <MemberAvatar member={assigneeMember || { name: assignee }} className="kb-avatar" presence={false} />}
-      </div>}
+      </div>
     </div>
   )
 }
@@ -270,7 +264,8 @@ function BoardSwitcher({ board, boardId, boards, shareMap, canWrite, open, onOpe
   )
 }
 
-function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = false }) {
+// `chip` is the card sheet's details row; the default is the labelled picker.
+function AssigneePicker({ card, canWrite, members, share, onUpdate, chip = false }) {
   const rootRef = useRef(null)
   const searchRef = useRef(null)
   const [open, setOpen] = useState(false)
@@ -325,18 +320,30 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = f
     const menuHeight = Math.min(420, window.innerHeight * 0.58)
     setMenuStyle(!mobile && rect ? {
       top: `${Math.max(16, Math.min(rect.bottom + 6, window.innerHeight - menuHeight - 16))}px`,
-      left: `${Math.max(16, Math.min(rect.right - 320, window.innerWidth - 336))}px`,
+      left: `${Math.max(16, Math.min(chip ? rect.left : rect.right - 320, window.innerWidth - 336))}px`,
     } : undefined)
     setOpen(true)
   }
 
-  // A viewer has nothing to choose, so an empty icon would only look actionable.
-  if (iconOnly && !canWrite && !selectedLabel) return null
+  // A viewer has nothing to choose, so an empty chip would only look actionable.
+  if (chip && !canWrite && !selectedLabel) return null
   return (
-    <div className="kb-assignee-picker" ref={rootRef}>
-      <button
+    <div className={chip ? 'kb-chip-wrap kb-assignee-picker' : 'kb-assignee-picker'} ref={rootRef}>
+      {chip ? <button
         type="button"
-        className={`kb-assignee-trigger${iconOnly ? ' kb-icon-trigger' : ''}`}
+        className={`kb-detail-chip${selectedLabel ? ' kb-assignee-chip' : ' is-empty'}`}
+        aria-label={selectedLabel ? `Assignee: ${selectedLabel}. Change assignee` : 'Add assignee'}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        disabled={!canWrite}
+        onClick={() => canWrite && togglePicker()}
+      >
+        {selectedLabel
+          ? <><MemberAvatar member={selectedMember || { name: selectedLabel }} className="kb-chip-avatar" presence={false} />{selectedLabel}</>
+          : <><Plus aria-hidden="true" />Add assignee</>}
+      </button> : <button
+        type="button"
+        className="kb-assignee-trigger"
         aria-label={selectedLabel ? `Assignee: ${selectedLabel}` : 'Choose assignee'}
         title={selectedLabel || 'Unassigned'}
         aria-haspopup="dialog"
@@ -347,9 +354,9 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = f
         {selectedLabel
           ? <MemberAvatar member={selectedMember || { name: selectedLabel }} className="kb-assignee-avatar" presence={false} />
           : <span className="kb-assignee-avatar kb-assignee-avatar-empty"><User aria-hidden="true" /></span>}
-        {!iconOnly && <span className={`kb-assignee-trigger-label${selectedLabel ? '' : ' is-empty'}`}>{selectedLabel || 'Unassigned'}</span>}
-        {canWrite && !iconOnly && <ChevronDown aria-hidden="true" />}
-      </button>
+        <span className={`kb-assignee-trigger-label${selectedLabel ? '' : ' is-empty'}`}>{selectedLabel || 'Unassigned'}</span>
+        {canWrite && <ChevronDown aria-hidden="true" />}
+      </button>}
       {open && createPortal(<>
         <div className="kb-assignee-backdrop" aria-hidden="true" onClick={() => setOpen(false)} />
         <div ref={menuRef} className="kb-assignee-menu" style={menuStyle} role="dialog" aria-modal="true" aria-label="Assign card">
@@ -405,236 +412,30 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, iconOnly = f
   )
 }
 
-function LabelPicker({ label, canWrite, onChange }) {
-  const rootRef = useRef(null)
-  const [open, setOpen] = useState(false)
-  const menuRef = useModalFocus(open, () => setOpen(false))
-  const current = LABELS[label] ? label : 'none'
-  useEffect(() => {
-    if (!open) return undefined
-    const closeOnOutsidePress = event => { if (!rootRef.current?.contains(event.target)) setOpen(false) }
-    document.addEventListener('pointerdown', closeOnOutsidePress)
-    return () => document.removeEventListener('pointerdown', closeOnOutsidePress)
-  }, [open])
-  if (!canWrite && current === 'none') return null
-  const choose = name => { onChange(name); setOpen(false) }
-  return <div className="kb-label-picker" ref={rootRef}>
-    <button
-      type="button"
-      className={`kb-label-trigger kb-icon-trigger${current === 'none' ? ' kb-color-empty' : ''}`}
-      style={current === 'none' ? undefined : { background: LABELS[current], borderColor: LABELS[current] }}
-      aria-label={current === 'none' ? 'Choose label' : `Label: ${current}`}
-      title={current === 'none' ? 'No label' : `Label: ${current}`}
-      aria-haspopup="dialog"
-      aria-expanded={open}
-      disabled={!canWrite}
-      onClick={() => setOpen(value => !value)}
-    />
-    {open && <div ref={menuRef} className="kb-label-menu" role="dialog" aria-label="Choose label">
-      <div className="kb-swatches">
-        {Object.entries(LABELS).map(([name, color]) => (
-          <button
-            key={name}
-            type="button"
-            className={`kb-swatch${name === 'none' ? ' kb-none' : ''}${current === name ? ' kb-on' : ''}`}
-            style={name === 'none' ? undefined : { background: color }}
-            aria-label={name === 'none' ? 'No label' : `Label ${name}`}
-            aria-pressed={current === name}
-            onClick={() => choose(name)}
-          />
-        ))}
-      </div>
-    </div>}
-  </div>
-}
+const BOARD_VIEW_OPTIONS = [
+  { id: 'all', label: 'All' },
+  { id: 'mine', label: 'Mine' },
+  { id: 'unassigned', label: 'Unassigned' },
+]
 
-function linkifiedParts(text) {
-  return String(text || '').split(/(https?:\/\/[^\s<]+)/gu).flatMap(part => {
-    if (!/^https?:\/\//u.test(part)) return [{ text: part }]
-    const match = part.match(/^(.*?)([.,!?;:]+)?$/u)
-    const url = match?.[1] || part
-    try {
-      const parsed = new URL(url)
-      if (!['http:', 'https:'].includes(parsed.protocol)) return [{ text: part }]
-      return [{ text: url, href: parsed.href }, { text: match?.[2] || '' }]
-    } catch {
-      return [{ text: part }]
-    }
-  })
-}
-
-function LinkifiedText({ text }) {
-  return linkifiedParts(text).map((part, index) => {
-    if (!part.href) return part.text
-
-    return (
-      <a
-        key={index}
-        href={part.href}
-        target="_blank"
-        rel="noreferrer"
-        onClick={event => event.stopPropagation()}
-        onKeyDown={event => event.stopPropagation()}
-      >
-        {part.text}
-      </a>
-    )
-  })
-}
-
-// React owns the editor shell, not its text nodes. The browser owns selection,
-// typing, plain-text paste, composition and undo without replacing the clicked
-// surface. Incoming polls update idle editors, never the focused draft/caret.
-function InlineCardText({
-  value,
-  className,
-  label,
-  placeholder,
-  autoFocus = false,
-  links = false,
-  onCommit,
-  onCancel,
-}) {
-  const editorRef = useRef(null)
-  const dirtyRef = useRef(false)
-  const savedText = value || ''
-
-  const renderText = useCallback(text => {
-    const editor = editorRef.current
-    if (!editor) return
-
-    const parts = links ? linkifiedParts(text) : [{ text }]
-    const nodes = parts.map(part => {
-      if (!part.href) return document.createTextNode(part.text)
-
-      const anchor = document.createElement('a')
-      anchor.textContent = part.text
-      anchor.href = part.href
-      anchor.target = '_blank'
-      anchor.rel = 'noreferrer'
-      return anchor
-    })
-
-    editor.replaceChildren(...nodes)
-    editor.dataset.empty = text ? 'false' : 'true'
-  }, [links])
-
-  useLayoutEffect(() => {
-    const isFocused = document.activeElement === editorRef.current
-    if (!isFocused && !dirtyRef.current) renderText(savedText)
-  }, [savedText, renderText])
-
-  useLayoutEffect(() => {
-    if (autoFocus) editorRef.current?.focus()
-  }, [])
-
-  const commitOnBlur = event => {
-    const text = event.currentTarget.innerText.replace(/\r\n?/g, '\n')
-    if (dirtyRef.current && text !== savedText) {
-      const acceptedText = onCommit(text)
-      if (acceptedText === false) return
-      renderText(acceptedText ?? text)
-    } else {
-      renderText(savedText)
-    }
-    dirtyRef.current = false
-  }
-
-  const cancelOnEscape = event => {
-    if (event.key !== 'Escape' || event.isComposing || event.nativeEvent.isComposing) return
-
-    event.preventDefault()
-    event.stopPropagation()
-    dirtyRef.current = false
-    renderText(savedText)
-    onCancel?.()
-  }
-
-  const openLink = event => {
-    const anchor = event.target.closest('a')
-    if (!anchor) return
-
-    event.preventDefault()
-    event.stopPropagation()
-    window.open(anchor.href, '_blank', 'noopener,noreferrer')
-  }
-
+function BoardViewSwitch({ view, counts, onChange }) {
   return (
-    <div
-      ref={editorRef}
-      className={className}
-      contentEditable="plaintext-only"
-      role="textbox"
-      tabIndex={0}
-      aria-label={label}
-      aria-multiline="true"
-      data-placeholder={placeholder}
-      data-modal-inline-editor
-      spellCheck
-      onInput={event => {
-        dirtyRef.current = true
-        event.currentTarget.dataset.empty = event.currentTarget.innerText ? 'false' : 'true'
-      }}
-      onBlur={commitOnBlur}
-      onKeyDown={cancelOnEscape}
-      onClick={openLink}
-    />
+    <div className="kb-view-switch" role="group" aria-label="Show cards">
+      {BOARD_VIEW_OPTIONS.map(option => (
+        <button
+          key={option.id}
+          type="button"
+          className="kb-view-option"
+          aria-pressed={view === option.id}
+          aria-label={`${option.label === 'Mine' ? 'My cards' : `${option.label} cards`}, ${counts[option.id]}`}
+          onClick={() => onChange(option.id)}
+        >
+          <span>{option.label}</span>
+          <span className="kb-view-count" aria-hidden="true">{counts[option.id]}</span>
+        </button>
+      ))}
+    </div>
   )
-}
-
-function pullRequestLabel(url) {
-  const pull = parsePullRequestUrl(url)
-  if (pull) return `${pull.owner}/${pull.repo} #${pull.number}`
-  try { return new URL(url).hostname } catch { return 'Link' }
-}
-
-// Statuses are keyed by URL. Offline, nothing new is fetched: a card keeps its
-// last known status, and a link never checked (or not a GitHub PR) shows none.
-function PullRequestReferences({ card, canWrite, online, statuses, onUpdate, onRefresh }) {
-  const urls = cardPullUrls(card)
-  const statusFor = url => (parsePullRequestUrl(url) ? statuses[url] || (online ? { label: 'Checking…', tone: 'unknown' } : null) : null)
-  const hints = [...new Set(urls.map(url => statusFor(url)?.hint).filter(Boolean))]
-  const [editor, setEditor] = useState(null)
-  const [draft, setDraft] = useState('')
-  const [error, setError] = useState('')
-  useEffect(() => { setEditor(null); setDraft(''); setError('') }, [card.id])
-  const save = () => {
-    if (!parsePullRequestUrl(draft)) { setError('Use a GitHub pull request URL.'); return }
-    onUpdate(editor === 'add' ? null : editor, draft.trim())
-    setEditor(null); setDraft(''); setError('')
-  }
-  const remove = url => onUpdate(url, '')
-  const canRefresh = online && urls.some(parsePullRequestUrl)
-  if (!urls.length && !canWrite) return null
-  return <section className="kb-pr-reference" aria-label="Linked pull requests">
-    {urls.length > 0 && <div className="kb-pr-list">
-      {urls.map(url => {
-        const status = statusFor(url)
-        const isEditing = editor === url
-        return <div className="kb-pr-item" key={`${card.id}-${url}`}>
-          {isEditing ? <form className="kb-pr-editor" onSubmit={event => { event.preventDefault(); save() }}>
-            <input className="kb-input" type="url" autoFocus value={draft} placeholder="https://github.com/owner/repo/pull/123" onChange={event => { setDraft(event.target.value); setError('') }} />
-            <button type="submit" className="kb-btn">Save</button>
-            <button type="button" className="kb-btn kb-pr-cancel" onClick={() => { setEditor(null); setDraft('') }}>Cancel</button>
-          </form> : <>
-            <a className="kb-pr-link" href={url} target="_blank" rel="noreferrer">{pullRequestLabel(url)}</a>
-            {status && <span className={`kb-pr-status kb-pr-status-${status.tone}`}>{status.label}</span>}
-            {canWrite && <span className="kb-pr-actions"><button type="button" className="kb-pr-edit" onClick={() => { setEditor(url); setDraft(url) }}>Edit</button><button type="button" className="kb-iconbtn kb-pr-remove" aria-label={`Remove ${pullRequestLabel(url)}`} title="Remove pull request" onClick={() => remove(url)}><Trash /></button></span>}
-          </>}
-        </div>
-      })}
-    </div>}
-    {editor === 'add' ? <form className="kb-pr-editor" onSubmit={event => { event.preventDefault(); save() }}>
-      <input className="kb-input" type="url" autoFocus value={draft} placeholder="https://github.com/owner/repo/pull/123" onChange={event => { setDraft(event.target.value); setError('') }} />
-      <button type="submit" className="kb-btn">Add</button>
-      <button type="button" className="kb-btn kb-pr-cancel" onClick={() => { setEditor(null); setDraft('') }}>Cancel</button>
-    </form> : (canWrite || canRefresh) && <div className="kb-pr-footer">
-      {canWrite && <button type="button" className="kb-btn kb-pr-add" onClick={() => { setEditor('add'); setDraft('') }}><Plus /> Add pull request</button>}
-      {canRefresh && <button type="button" className="kb-iconbtn kb-pr-refresh" aria-label="Refresh pull request statuses" title="Refresh statuses" onClick={onRefresh}><Reload /></button>}
-    </div>}
-    {hints.map(hint => <p className="kb-pr-hint" key={hint}>{hint}</p>)}
-    {error && <p className="kb-attachment-error" role="alert">{error}</p>}
-  </section>
 }
 
 function CardTitleEditor({ card, canWrite, onCommit, onCancel }) {
@@ -663,133 +464,6 @@ function CardTitleEditor({ card, canWrite, onCommit, onCancel }) {
         />
       ) : (
         <div className="kb-title-display">{card.title}</div>
-      )}
-    </div>
-  )
-}
-
-function CardNotesEditor({ card, canWrite, onCommit }) {
-  const commitNotes = notes => {
-    if (onCommit(notes) === false) return false
-    return notes
-  }
-
-  return (
-    <div className="kb-detail-field kb-notes-field">
-      {canWrite ? (
-        <InlineCardText
-          key={card.id}
-          className="kb-notes-display kb-editable-field"
-          value={card.notes}
-          placeholder="Notes…"
-          label="Card notes"
-          links
-          onCommit={commitNotes}
-        />
-      ) : (
-        <div className={`kb-notes-display${card.notes ? '' : ' kb-notes-empty'}`}>
-          {card.notes ? <LinkifiedText text={card.notes} /> : 'Notes…'}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ChecklistEditor({ checklist, canWrite, onAdd, onToggle, onDelete, onEdit }) {
-  const [newItemText, setNewItemText] = useState('')
-  const [editingItem, setEditingItem] = useState(null)
-
-  const addItem = () => {
-    const text = newItemText.trim()
-    if (!text || !canWrite) return
-    onAdd(text)
-    setNewItemText('')
-  }
-
-  const saveItem = item => {
-    const text = editingItem.text.trim()
-    if (text && text !== item.text) onEdit(item.id, text)
-    setEditingItem(null)
-  }
-
-  const handleEditKey = event => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      event.stopPropagation()
-      setEditingItem(null)
-    } else if (event.key === 'Enter') {
-      event.preventDefault()
-      event.currentTarget.blur()
-    }
-  }
-
-  if (!checklist.length && !canWrite) return null
-
-  return (
-    <div className="kb-checklist">
-      {checklist.map(item => (
-        <div className="kb-check-item" key={item.id}>
-          <div className="kb-check-toggle">
-            <input
-              type="checkbox"
-              checked={item.done}
-              aria-label={item.text}
-              disabled={!canWrite}
-              onChange={() => onToggle(item.id)}
-            />
-            {editingItem?.id === item.id ? (
-              <input
-                className="kb-input kb-check-edit"
-                data-modal-inline-editor
-                value={editingItem.text}
-                aria-label={`Edit checklist item ${item.text}`}
-                autoFocus
-                onChange={event => setEditingItem({ id: item.id, text: event.target.value })}
-                onBlur={() => saveItem(item)}
-                onKeyDown={handleEditKey}
-              />
-            ) : (
-              <button
-                type="button"
-                className={`kb-check-text ${item.done ? 'kb-check-done' : ''}`}
-                onClick={() => {
-                  if (canWrite) setEditingItem({ id: item.id, text: item.text })
-                }}
-              >
-                {item.text}
-              </button>
-            )}
-          </div>
-          {canWrite && (
-            <button
-              className="kb-iconbtn"
-              aria-label={`Delete checklist item ${item.text}`}
-              onClick={() => onDelete(item.id)}
-            >
-              <Trash />
-            </button>
-          )}
-        </div>
-      ))}
-      {canWrite && (
-        <div className="kb-check-add">
-          <input
-            className="kb-input"
-            value={newItemText}
-            placeholder="Add checklist item…"
-            aria-label="New checklist item"
-            onChange={event => setNewItemText(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                addItem()
-              }
-            }}
-          />
-          <button className="kb-btn kb-btn-primary" disabled={!newItemText.trim()} onClick={addItem}>
-            Add
-          </button>
-        </div>
       )}
     </div>
   )
@@ -988,6 +662,9 @@ export default function Board({
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [filterText, setFilterText] = useState('')
   const [filterLabels, setFilterLabels] = useState([])
+  const [boardView, setBoardView] = useState('all')
+  const [assignmentLog, setAssignmentLog] = useState(null)
+  const [assignmentUndo, setAssignmentUndo] = useState(null)
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [members, setMembers] = useState(null)
   const [identity, setIdentity] = useState(null)
@@ -1001,6 +678,17 @@ export default function Board({
   const [attachmentDropActive, setAttachmentDropActive] = useState(false)
   const [pullStatuses, setPullStatuses] = useState({})
   const [pullStatusRefresh, setPullStatusRefresh] = useState(0)
+  // What the board document does not carry for the open card: a long shared
+  // description's full text and the card's activity (boardRepository.readCard).
+  // The ref is the source of truth for chained saves; state drives rendering.
+  const [cardDetails, setCardDetails] = useState(null)
+  const cardDetailsRef = useRef(null)
+  const detailsCacheRef = useRef(new Map())
+  const [savedTick, setSavedTick] = useState(0)
+  const [collapsedLists, setCollapsedLists] = useState(() => new Set())
+  const [columnDrag, setColumnDrag] = useState(null) // { columnId, dx, overIndex }
+  const [notesConflict, setNotesConflict] = useState(null)
+  const [notesError, setNotesError] = useState('')
 
   const boardRef = useRef(null)
   const boardScrollRef = useRef(null)
@@ -1012,13 +700,56 @@ export default function Board({
   const availabilityRef = useRef(availability)
   const shareRef = useRef(share)
   const onlineRef = useRef(online)
-  const filtersRef = useRef({ text: filterText, labels: filterLabels })
+  const cardVisibleRef = useRef(() => true)
   const replayingRef = useRef(false)
   const pendingEntriesRef = useRef([])
   const lastInteractionAtRef = useRef(Date.now())
   const fileInputRef = useRef(null)
   const cardSheetRef = useModalFocus(Boolean(openCardId), () => { setOpenCardId(null); setDraftCard(null) })
   useEffect(() => { setConfirmDeleteCard(false) }, [openCardId])
+
+  const showDetails = details => {
+    cardDetailsRef.current = details
+    setCardDetails(details)
+    if (details?.cardId && details.status !== 'loading') detailsCacheRef.current.set(details.cardId, details)
+  }
+  const updateDetails = (cardId, change) => {
+    const current = cardDetailsRef.current
+    if (current?.cardId === cardId) showDetails(change(current))
+    else if (detailsCacheRef.current.has(cardId)) detailsCacheRef.current.set(cardId, change(detailsCacheRef.current.get(cardId)))
+  }
+  // A committed edit's activity joins the open card's timeline without a re-read.
+  const noteActivity = result => {
+    if (result?.status === 'saved' && result.cardId && result.entries?.length) {
+      updateDetails(result.cardId, details => ({ ...details, activity: mergeActivity(details.activity, result.entries) }))
+    } else if (result?.status === 'unsupported' && result.cardId) {
+      updateDetails(result.cardId, details => ({ ...details, status: 'unsupported' }))
+    }
+  }
+
+  useEffect(() => { detailsCacheRef.current = new Map() }, [boardId])
+
+  // Loads on open and again when the card's description changes on the board
+  // (someone else saved it); a cached copy shows at once in the meantime.
+  const openCardSaved = Boolean(openCardId && board?.cards?.[openCardId])
+  const openCardNotesKey = openCardSaved ? `${board.cards[openCardId].notes}\u0000${board.cards[openCardId].notesLength ?? ''}` : ''
+  useEffect(() => {
+    setNotesConflict(null)
+    setNotesError('')
+    if (!openCardSaved) { showDetails(null); return undefined }
+    let alive = true
+    const cardId = openCardId
+    const cached = detailsCacheRef.current.get(cardId)
+    if (cardDetailsRef.current?.cardId !== cardId) showDetails(cached || { cardId, status: 'loading', notes: null, notesVersion: null, activity: [] })
+    createBoardRepository({ storage: window.mobius.storage }).readCard(boardId, cardId)
+      .then(details => { if (alive) showDetails({ cardId, ...details }) })
+      .catch(() => {
+        if (alive && cardDetailsRef.current?.cardId === cardId && cardDetailsRef.current.status === 'loading') {
+          showDetails({ cardId, status: 'error', notes: null, notesVersion: null, activity: [] })
+        }
+      })
+    return () => { alive = false }
+  }, [boardId, openCardId, openCardSaved, openCardNotesKey])
   const columnConfirmRef = useModalFocus(confirmDeleteCol, () => setConfirmDeleteCol(null))
   const deleteCardButtonRef = useRef(null)
   const closeDeleteCardConfirm = () => {
@@ -1029,7 +760,6 @@ export default function Board({
   boardRef.current = board
   shareRef.current = share
   onlineRef.current = online
-  filtersRef.current = { text: filterText, labels: filterLabels }
   const publishAvailability = useCallback(next => {
     availabilityRef.current = next
     setAvailability(next)
@@ -1109,6 +839,92 @@ export default function Board({
     if (localMatch && (profileHandle || profileName)) return profileHandle ? `@${profileHandle}` : profileName
     return cardAssigneeLabel(card, displayMembers)
   }
+
+  // "Me" is an identity, not a name: every deployment linked to this account,
+  // plus the member record this board knows us by.
+  const selfMember = selfCollaborator(displayMembers, share)
+  const myHosts = [...new Set([
+    localDeploymentHost,
+    ...(Array.isArray(identity?.deployments) ? identity.deployments : []).map(item => {
+      try { return item?.url ? new URL(item.url).hostname : '' } catch { return '' }
+    }),
+    ...(selfMember ? (selfMember.hosts || [selfMember.host]) : []),
+  ].filter(Boolean))]
+  const me = { hosts: myHosts, names: [...(share ? [] : ['Me']), profileHandle].filter(Boolean) }
+  const myLabel = profileHandle ? `@${profileHandle}` : selfMember ? memberLabel(selfMember) : (profileName || 'Me')
+  const actorRef = share
+    ? assignmentRef({ label: myLabel, host: selfMember?.host || localDeploymentHost })
+    : assignmentRef({ label: 'Me' })
+  const isMe = ref => hasAssignment(ref) && isAssignedToMe({ assignee: ref.label, assigneeHost: ref.host }, me)
+  const nameForRef = ref => {
+    if (isMe(ref)) return 'you'
+    return assigneeLabelForCard({ assignee: ref.label || ref.host, assigneeHost: ref.host }) || ref.label || ref.host
+  }
+  const cardVisible = card => cardMatchesView(card, boardView, me)
+    && cardMatchesFilters(card, filterText, filterLabels, assigneeLabelForCard(card))
+  cardVisibleRef.current = cardVisible
+
+  useEffect(() => {
+    let active = true
+    setBoardView('all')
+    setCollapsedLists(new Set())
+    loadUi().then(ui => {
+      if (!active) return
+      setBoardView(normalizeBoardView(ui?.boardViews?.[boardId]))
+      const folded = ui?.collapsedLists?.[boardId]
+      setCollapsedLists(new Set(Array.isArray(folded) ? folded.filter(id => typeof id === 'string') : []))
+    }).catch(() => {})
+    return () => { active = false }
+  }, [boardId])
+
+  const setListFolded = (columnId, folded) => {
+    setCollapsedLists(current => {
+      const next = new Set(current)
+      if (folded) next.add(columnId)
+      else next.delete(columnId)
+      saveCollapsedLists(boardId, [...next]).catch(error => {
+        window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'collapsed-lists' })
+      })
+      return next
+    })
+  }
+
+  const chooseBoardView = view => {
+    setBoardView(view)
+    saveBoardView(boardId, view).catch(error => {
+      window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'board-view' })
+    })
+  }
+
+  // Changes that reach this board without a history entry are noticed here and
+  // kept on this Möbius only. Private boards have no other editors.
+  useEffect(() => {
+    setAssignmentLog(null)
+    setAssignmentUndo(null)
+    if (!share) return undefined
+    let active = true
+    loadAssignmentLog(boardId).then(log => { if (active) setAssignmentLog(log) }).catch(() => {})
+    const unsubscribe = subscribeAssignmentLog(boardId, log => { if (active) setAssignmentLog(log) })
+    return () => { active = false; unsubscribe() }
+  }, [boardId, share?.host, share?.oid])
+
+  useEffect(() => {
+    if (!share || !board) return undefined
+    const timer = setTimeout(() => {
+      const confirmed = confirmedSharedRef.current
+      if (!confirmed) return
+      updateAssignmentLog(boardId, log => nextAssignmentLog(log, confirmed, { makeId: uid }))
+        .then(log => { if (log) setAssignmentLog(log) })
+        .catch(error => window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'assignment-log' }))
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [board, boardId, share?.host, share?.oid])
+
+  useEffect(() => {
+    if (!assignmentUndo) return undefined
+    const timer = setTimeout(() => setAssignmentUndo(null), 8000)
+    return () => clearTimeout(timer)
+  }, [assignmentUndo])
 
   useEffect(() => { setAttachmentError('') }, [openCardId])
 
@@ -1364,6 +1180,8 @@ export default function Board({
         const landed = await createBoardRepository({ storage: window.mobius.storage }).mutate(boardId, operation, { sharedState: confirmedSharedRef.current })
         if (landed.authority === 'shared') confirmedSharedRef.current = rememberSharedState(confirmedSharedRef.current, shareRef.current, landed)
         settled = landed.doc
+        noteActivity(landed.activity)
+        setSavedTick(tick => tick + 1)
         onCommit?.()
         return
       } catch (error) {
@@ -1504,6 +1322,79 @@ export default function Board({
     return mutateCard({ type: 'update-card', cardId, patch })
   }
 
+  // A shared card's description is saved beside the board, checked against
+  // the version this editor loaded, so a concurrent edit becomes a visible
+  // choice instead of a silent overwrite. Drafts, private boards and hosts
+  // without card details save through the board as before.
+  const saveCardNotes = (cardId, notes) => {
+    const entry = shareRef.current
+    const details = cardDetailsRef.current?.cardId === cardId ? cardDetailsRef.current : null
+    if (!entry || !boardRef.current?.cards?.[cardId] || details?.status !== 'ok') return updateCard(cardId, { notes })
+    if (!boardAccess(entry, onlineRef.current).canWrite) return false
+    setNotesError('')
+    setNotesConflict(null)
+    updateDetails(cardId, current => ({ ...current, notes }))
+    writeChain.current = writeChain.current.catch(() => {}).then(async () => {
+      try {
+        const expected = cardDetailsRef.current?.cardId === cardId ? cardDetailsRef.current.notesVersion : details.notesVersion
+        const result = await createBoardRepository({ storage: window.mobius.storage }).saveNotes(boardId, cardId, notes, expected)
+        if (result.status === 'conflict') {
+          setNotesConflict({ cardId, mine: notes, theirs: result.notes, notesVersion: result.notesVersion })
+          return
+        }
+        if (Number.isInteger(result.notesVersion)) updateDetails(cardId, current => ({ ...current, notesVersion: result.notesVersion }))
+        noteActivity(result.activity)
+        const card = boardRef.current?.cards?.[cardId]
+        if (result.card && card) {
+          const next = structuredClone(boardRef.current)
+          const { notesLength, ...rest } = next.cards[cardId]
+          next.cards[cardId] = { ...rest, notes: result.card.notes, ...(Number.isInteger(result.card.notesLength) ? { notesLength: result.card.notesLength } : {}) }
+          boardRef.current = next
+          setBoard(next)
+        }
+        setSavedTick(tick => tick + 1)
+      } catch (error) {
+        setNotesError(error?.code === 'notes-too-long'
+          ? `A description can be at most ${MAX_NOTES_CHARS.toLocaleString()} characters. Put longer text in an attachment.`
+          : 'The description wasn’t saved. Check your connection and try again.')
+        window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'save-description' })
+      }
+    })
+    return notes
+  }
+
+  const resolveNotesConflict = keepMine => {
+    const conflict = notesConflict
+    if (!conflict) return
+    setNotesConflict(null)
+    updateDetails(conflict.cardId, current => ({ ...current, notes: conflict.theirs, notesVersion: conflict.notesVersion }))
+    if (keepMine) saveCardNotes(conflict.cardId, conflict.mine)
+  }
+
+  // Every assignment change on a saved card records who made it. Taking a
+  // person off a card also offers an immediate Undo.
+  const assignCard = (cardId, target, { offerUndo = true } = {}) => {
+    const card = boardRef.current?.cards?.[cardId]
+    if (!card) return false
+    const from = cardAssignment(card)
+    const to = assignmentRef(target)
+    if (sameAssignment(from, to) && from.label === to.label) return true
+    const event = sameAssignment(from, to) ? null : createAssignmentEvent({ id: uid(), by: actorRef, from, to })
+    const saved = mutate({ type: 'assign-card', cardId, assignee: to.label, assigneeHost: to.host, ...(event ? { event } : {}) })
+    if (saved && event && offerUndo && hasAssignment(from)) {
+      setAssignmentUndo({ id: event.id, cardId, from, to })
+    } else if (saved && event) setAssignmentUndo(null)
+    return saved
+  }
+
+  const undoAssignment = () => {
+    const undo = assignmentUndo
+    setAssignmentUndo(null)
+    const card = undo && boardRef.current?.cards?.[undo.cardId]
+    // Someone may have changed it again since; never overwrite their newer choice.
+    if (card && sameAssignment(cardAssignment(card), undo.to)) assignCard(undo.cardId, undo.from, { offerUndo: false })
+  }
+
   const addCheckItem = (cardId, text) => {
     const item = { id: uid(), text, done: false }
     mutateCard({ type: 'add-checklist-item', cardId, item })
@@ -1630,6 +1521,43 @@ export default function Board({
     if (beforeColumnId !== undefined) mutate({ type: 'move-column', columnId: colId, beforeColumnId })
   }
 
+  // A list moves by dragging its header with a mouse. Touch keeps Move left /
+  // Move right in the list menu, because a sideways touch drag scrolls the board.
+  const startColumnDrag = (event, columnId) => {
+    if (event.pointerType !== 'mouse' || event.button !== 0 || !access.canWrite) return
+    if (event.target.closest('button, .kb-col-confirm')) return
+    const sections = [...(boardScrollRef.current?.querySelectorAll(':scope > [data-col-id]') || [])]
+    const others = sections.filter(section => section.dataset.colId !== columnId)
+      .map(section => ({ id: section.dataset.colId, rect: section.getBoundingClientRect() }))
+    const startX = event.clientX
+    let latest = null
+    const move = moveEvent => {
+      const dx = moveEvent.clientX - startX
+      if (!latest && Math.abs(dx) < 6) return
+      if (!latest) document.activeElement?.blur?.()
+      moveEvent.preventDefault()
+      const overIndex = others.filter(item => moveEvent.clientX > item.rect.left + item.rect.width / 2).length
+      latest = { columnId, dx, overIndex }
+      setColumnDrag(latest)
+    }
+    const finish = commit => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', drop)
+      window.removeEventListener('pointercancel', cancel)
+      setColumnDrag(null)
+      if (!commit || !latest) return
+      const ids = (boardRef.current?.columns || []).map(column => column.id)
+      const from = ids.indexOf(columnId)
+      if (from < 0 || latest.overIndex === from) return
+      mutate({ type: 'move-column', columnId, beforeColumnId: others[latest.overIndex]?.id ?? null })
+    }
+    const drop = () => finish(true)
+    const cancel = () => finish(false)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', drop)
+    window.addEventListener('pointercancel', cancel)
+  }
+
   const renameBoard = title => {
     const next = title.trim()
     if (!next || next === boardRef.current?.title) return
@@ -1748,10 +1676,7 @@ export default function Board({
       if (d && active && d.moved && d.overCol) {
         const current = boardRef.current
         const column = current?.columns.find(c => c.id === d.overCol)
-        const filters = filtersRef.current
-        const visibleIds = column?.cardIds.filter(id =>
-          cardMatchesFilters(current.cards[id], filters.text, filters.labels),
-        ) || []
+        const visibleIds = column?.cardIds.filter(id => cardVisibleRef.current(current.cards[id])) || []
         const fullIndex = visibleToFullIndex(column?.cardIds, visibleIds, d.overIndex, cardId)
         // Capture intent as an anchor on the rendered drop base. The op resolves
         // that id again on its fresh CAS base and falls back to end-of-list if a
@@ -1790,7 +1715,10 @@ export default function Board({
 
   const access = boardAccess(share, online && availability.kind !== 'terminal')
   const accessStatus = availability.kind === 'terminal' ? '' : access.status
+  // Only a shared board has a size limit that matters (private boards can grow to ~50 MB).
+  const capacity = share ? boardCapacity(board) : null
   const hasFilters = !!filterText.trim() || filterLabels.length > 0
+  const narrowed = hasFilters || boardView !== 'all'
   const linkedCard = board?.cards?.[openCardId]
   const linkedPullsKey = linkedCard ? cardPullUrls(linkedCard).filter(parsePullRequestUrl).join('\n') : ''
 
@@ -1862,6 +1790,12 @@ export default function Board({
     </>
   }
 
+  const boardCards = board.columns.flatMap(column => column.cardIds.map(id => board.cards[id]).filter(Boolean))
+  const viewCounts = {
+    all: boardCards.length,
+    mine: boardCards.filter(card => cardMatchesView(card, 'mine', me)).length,
+    unassigned: boardCards.filter(card => cardMatchesView(card, 'unassigned', me)).length,
+  }
   const isDraftCard = draftCard?.boardId === boardId && draftCard.card.id === openCardId
   const openCard_ = openCardId ? board.cards[openCardId] || (isDraftCard ? draftCard.card : null) : null
   // Header choices on an untitled draft ride along into its add-card.
@@ -1869,6 +1803,26 @@ export default function Board({
     ? setDraftCard(current => ({ ...current, card: { ...current.card, ...patch } }))
     : updateCard(openCard_.id, patch)
   const openCardColumn = openCard_ ? board.columns.find(column => column.cardIds.includes(openCard_.id)) : null
+  const closeCard = () => { setOpenCardId(null); setDraftCard(null) }
+  const columnColor = column => column?.color ? (LABELS[column.color] || 'var(--muted)') : 'var(--muted)'
+  const openDetails = openCard_ && cardDetails?.cardId === openCard_.id ? cardDetails : null
+  // Activity by someone on a shared board names them as the board shows them;
+  // on a private board every entry is this owner's (or their agent's).
+  const activityActor = entry => {
+    const name = entry.by ? nameForRef(assignmentRef({ label: entry.by.name, host: entry.by.host })) : 'you'
+    const who = name === 'you' ? 'You' : name
+    if (entry.via !== 'agent') return who
+    return who === 'You' ? 'Your agent' : `${who}’s agent`
+  }
+  const openTimeline = openCard_ && !isDraftCard ? cardTimeline({
+    card: openCard_,
+    activity: openDetails?.activity || [],
+    assignmentTimeline: cardAssignmentTimeline(openCard_, assignmentLog?.observed),
+    actorName: activityActor,
+  }) : []
+  const createdLabel = openCard_?.createdAt && !Number.isNaN(Date.parse(openCard_.createdAt))
+    ? `Created ${new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: new Date(openCard_.createdAt).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' }).format(new Date(openCard_.createdAt))}`
+    : ''
   return (
     <>
       <div className="kb-header kb-board-header">
@@ -1895,6 +1849,7 @@ export default function Board({
           {availability.kind === 'reconnecting' && <span className="kb-offline">{availability.message}</span>}
           {syncNote && <span className="kb-offline">{syncNote}</span>}
         </span>
+        <BoardViewSwitch view={boardView} counts={viewCounts} onChange={chooseBoardView} />
         {share && <BoardPresence members={displayMembers} onOpen={() => setShareOpen(true)} />}
         <button
           className={`kb-iconbtn${hasFilters ? ' kb-filter-active' : ''}`}
@@ -1911,6 +1866,14 @@ export default function Board({
       <div className="kb-divider" />
       {availability.kind === 'terminal' && <div className="kb-recovery" role="alert">
         <span>{availability.message}</span>
+      </div>}
+      {capacity?.nearlyFull && <div className="kb-capacity-warning" role="status">
+        <strong>This board is almost full: {Math.round(capacity.bytes / 1024)} KB of {Math.round(capacity.limit / 1024)} KB.</strong>
+        <span> When it’s full, no one can save changes to it. To make room, move long descriptions into attachments, delete finished cards or move them to another board, or split this board in two.</span>
+      </div>}
+      {capacity?.filesNearlyFull && <div className="kb-capacity-warning" role="status">
+        <strong>This board’s attachment space is almost used up: {capacity.files} of {capacity.fileLimit} files, {Math.round(capacity.fileBytes / 1048576)} MB of 100 MB.</strong>
+        <span> New files can’t be added once it’s full. Remove attachments you no longer need, or keep new files on another board.</span>
       </div>}
       {recoveryButton && <div className="kb-recovery" role="status">
         <span>{recoveredCount > 0 ? 'A recovery copy is ready to download.' : 'Unsynced edits are kept on this instance.'}</span>{recoveryButton}
@@ -1935,8 +1898,8 @@ export default function Board({
         <input
           className="kb-input kb-filter-input"
           type="search"
-          placeholder="Filter title or notes…"
-          aria-label="Filter cards by title or notes"
+          placeholder="Filter title, notes, or person…"
+          aria-label="Filter cards by title, notes, or person"
           value={filterText}
           onChange={event => setFilterText(event.target.value)}
         />
@@ -1973,7 +1936,30 @@ export default function Board({
         {board.columns.map((col, columnIndex) => {
           const showGap = drag && drag.moved && drag.overCol === col.id
           const allCards = col.cardIds.map(id => board.cards[id]).filter(Boolean)
-          const cards = allCards.filter(card => cardMatchesFilters(card, filterText, filterLabels))
+          const cards = allCards.filter(cardVisible)
+          const dragOthers = columnDrag ? board.columns.filter(column => column.id !== columnDrag.columnId) : []
+          const columnDragClass = !columnDrag ? ''
+            : columnDrag.columnId === col.id ? ' kb-col-dragging'
+              : dragOthers[columnDrag.overIndex]?.id === col.id ? ' kb-col-drop-before'
+                : columnDrag.overIndex >= dragOthers.length && dragOthers.at(-1)?.id === col.id ? ' kb-col-drop-after' : ''
+          const columnDragStyle = columnDrag?.columnId === col.id ? { transform: `translateX(${columnDrag.dx}px) rotate(0.6deg)` } : null
+          if (collapsedLists.has(col.id)) return (
+            <section
+              key={col.id}
+              data-col-id={col.id}
+              className={`kb-col kb-col-folded${showGap ? ' kb-drop' : ''}${columnDragClass}`}
+              style={{ '--kb-col-index': columnIndex, ...columnDragStyle }}
+              aria-label={`${col.name}, folded`}
+              onPointerDown={event => startColumnDrag(event, col.id)}
+            >
+              <button type="button" className="kb-col-unfold" aria-label={`Open list ${col.name}, ${allCards.length} card${allCards.length === 1 ? '' : 's'}`}
+                title={`Open ${col.name}`} onClick={() => setListFolded(col.id, false)}>
+                <span className="kb-col-status" aria-hidden="true" style={{ background: col.color ? (LABELS[col.color] || 'var(--muted)') : 'var(--muted)' }} />
+                <span className="kb-col-folded-name">{col.name}</span>
+                <span className="kb-count">{narrowed ? `${cards.length}/${allCards.length}` : allCards.length}</span>
+              </button>
+            </section>
+          )
           const cardNodes = []
           let dropPosition = 0
           for (const card of cards) {
@@ -1982,8 +1968,6 @@ export default function Board({
             }
             cardNodes.push(<Card
               key={card.id}
-              boardId={boardId}
-              share={share}
               card={card}
               assigneeLabel={assigneeLabelForCard(card)}
               assigneeMember={collaboratorForHost(displayMembers, card.assigneeHost)}
@@ -2001,11 +1985,11 @@ export default function Board({
             <section
               key={col.id}
               data-col-id={col.id}
-              className={`kb-col${showGap ? ' kb-drop' : ''}`}
-              style={{ '--kb-col-index': columnIndex }}
+              className={`kb-col${showGap ? ' kb-drop' : ''}${columnDragClass}`}
+              style={{ '--kb-col-index': columnIndex, ...columnDragStyle }}
               aria-label={col.name}
             >
-              <div className="kb-col-head">
+              <div className="kb-col-head" onPointerDown={event => startColumnDrag(event, col.id)} title={access.canWrite ? 'Drag to move this list' : undefined}>
                 <span
                   className="kb-col-status"
                   style={{ background: col.color ? (LABELS[col.color] || 'var(--muted)') : 'var(--muted)' }}
@@ -2020,35 +2004,19 @@ export default function Board({
                   onBlur={e => { if (e.target.value.trim() && e.target.value !== col.name) renameColumn(col.id, e.target.value.trim()) }}
                   onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
                 />
-                <span className="kb-count">{hasFilters ? `${cards.length}/${allCards.length}` : allCards.length}</span>
-                <div className="kb-col-actions">
-                  <div className="kb-col-reorder" aria-label={`Reorder list ${col.name}`}>
-                  <button
-                    className="kb-iconbtn kb-col-action"
-                    aria-label={`Move list ${col.name} left`}
-                    disabled={!access.canWrite || columnIndex === 0}
-                    onClick={() => reorderColumn(col.id, -1)}
-                  >
-                    <ChevronLeft />
-                  </button>
-                  <button
-                    className="kb-iconbtn kb-col-action kb-chevron-right"
-                    aria-label={`Move list ${col.name} right`}
-                    disabled={!access.canWrite || columnIndex === board.columns.length - 1}
-                    onClick={() => reorderColumn(col.id, 1)}
-                  >
-                    <ChevronLeft />
-                  </button>
-                  </div>
-                  <button
-                  className="kb-iconbtn kb-col-action"
-                  aria-label={`Delete list ${col.name}`}
-                  disabled={!access.canWrite}
-                  onClick={() => setConfirmDeleteCol(col.id)}
-                >
-                  <Trash />
-                  </button>
-                </div>
+                <span className="kb-count">{narrowed ? `${cards.length}/${allCards.length}` : allCards.length}</span>
+                {access.canWrite && <MenuButton label={`List options for ${col.name}`} className="kb-col-menu">
+                  <button type="button" role="menuitem" onClick={() => requestAnimationFrame(() => boardScrollRef.current?.querySelector(`[data-col-id="${CSS.escape(col.id)}"] .kb-col-name`)?.select())}>Rename list</button>
+                  <button type="button" role="menuitem" onClick={() => setListFolded(col.id, true)}>Fold list</button>
+                  <div className="kb-menu-separator" />
+                  <button type="button" role="menuitem" disabled={columnIndex === 0} onClick={() => reorderColumn(col.id, -1)}>Move left</button>
+                  <button type="button" role="menuitem" disabled={columnIndex === board.columns.length - 1} onClick={() => reorderColumn(col.id, 1)}>Move right</button>
+                  <div className="kb-menu-separator" />
+                  <button type="button" role="menuitem" className="kb-menu-danger"
+                    aria-label={`Delete list ${col.name}`}
+                    onClick={() => setConfirmDeleteCol(col.id)}
+                  >Delete list…</button>
+                </MenuButton>}
               </div>
               {access.canWrite && confirmDeleteCol === col.id && (
                 <div ref={columnConfirmRef} tabIndex={-1} className="kb-col-confirm" role="alertdialog" aria-modal="true" aria-label={`Delete list ${col.name}`}>
@@ -2064,7 +2032,10 @@ export default function Board({
               <div className="kb-cards">
                 {cardNodes}
                 {cards.length === 0 && !showGap && (
-                  <div className="kb-empty">{hasFilters && allCards.length ? 'No matching cards' : 'Nothing here yet'}</div>
+                  <div className="kb-empty">{!allCards.length ? 'Nothing here yet'
+                    : hasFilters ? 'No matching cards'
+                      : boardView === 'mine' ? 'Nothing of yours here'
+                        : 'Nothing unassigned here'}</div>
                 )}
               </div>
               {access.canWrite && <button className="kb-addcard" onClick={() => addCard(col.id)}>
@@ -2090,28 +2061,27 @@ export default function Board({
 
       {openCard_ && (
         <>
-          <div className="kb-scrim" onClick={() => { setOpenCardId(null); setDraftCard(null) }} />
+          <div className="kb-scrim" onClick={closeCard} />
           <div
             ref={cardSheetRef}
             tabIndex={-1}
-            className="kb-sheet kb-card-sheet"
+            className={`kb-sheet kb-card-sheet${attachmentDropActive ? ' is-dropping' : ''}`}
             role="dialog"
             aria-modal="true"
-            aria-label="Card details"
+            aria-label={isDraftCard ? 'New card' : 'Card details'}
             onPaste={attachFromPaste}
+            onDragOver={event => { if (access.canWrite && !isDraftCard && event.dataTransfer?.types?.includes('Files')) { event.preventDefault(); setAttachmentDropActive(true) } }}
+            onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget)) setAttachmentDropActive(false) }}
+            onDrop={event => { if (!event.dataTransfer?.files?.length) return; event.preventDefault(); setAttachmentDropActive(false); if (access.canWrite) attachFiles(event.dataTransfer.files) }}
           >
             <div className="kb-card-toolbar">
-              <span className="kb-card-toolbar-title">New card</span>
-              <LabelPicker label={openCard_.label} canWrite={access.canWrite} onChange={label => patchOpenCard({ label })} />
-              <AssigneePicker
-                card={openCard_}
-                canWrite={access.canWrite}
-                members={displayMembers}
-                share={share}
-                iconOnly
-                onUpdate={patchOpenCard}
-              />
-              <button className="kb-btn kb-btn-primary kb-card-toolbar-done" type="button" onClick={() => { setOpenCardId(null); setDraftCard(null) }}>Done</button>
+              {isDraftCard || !openCardColumn
+                ? <span className="kb-card-toolbar-title">New card</span>
+                : <StatusPill columns={board.columns} columnId={openCardColumn.id} colorFor={columnColor} canWrite={access.canWrite}
+                  onMove={columnId => moveCard(openCard_.id, columnId, null)} />}
+              <span className="kb-card-toolbar-spacer" />
+              <SavedIndicator tick={savedTick} />
+              <button type="button" className="kb-iconbtn kb-card-close" aria-label="Close card" title="Close. Your changes are already saved." onClick={closeCard}><X /></button>
             </div>
             <CardTitleEditor card={openCard_} canWrite={access.canWrite} onCommit={title => {
               if (!isDraftCard) return updateCard(openCard_.id, { title })
@@ -2119,9 +2089,33 @@ export default function Board({
               if (saved) { setDraftCard(null); window.mobius?.signal?.('item_created', { type: 'card' }) }
               return saved
             }} onCancel={() => { if (isDraftCard) { setDraftCard(null); setOpenCardId(null) } }} />
-            <CardNotesEditor card={openCard_} canWrite={access.canWrite} onCommit={notes => updateCard(openCard_.id, { notes })} />
+            <div className="kb-detail-chips">
+              <AssigneePicker
+                card={openCard_}
+                canWrite={access.canWrite}
+                members={displayMembers}
+                share={share}
+                chip
+                onUpdate={patch => isDraftCard ? patchOpenCard(patch) : assignCard(openCard_.id, { label: patch.assignee, host: patch.assigneeHost })}
+              />
+              <LabelChip label={openCard_.label} labels={LABELS} canWrite={access.canWrite} onChange={label => patchOpenCard({ label })} />
+              <DueChip due={openCard_.due} canWrite={access.canWrite} onChange={due => patchOpenCard({ due })} />
+            </div>
 
-            <ChecklistEditor
+            <DescriptionSection
+              cardId={openCard_.id}
+              text={openDetails && typeof openDetails.notes === 'string' ? openDetails.notes : openCard_.notes}
+              canWrite={access.canWrite}
+              editable={!hasExternalNotes(openCard_) || openDetails?.status === 'ok'}
+              loading={hasExternalNotes(openCard_) && (!openDetails || openDetails.status === 'loading')}
+              conflict={notesConflict?.cardId === openCard_.id}
+              error={notesError}
+              onCommit={notes => saveCardNotes(openCard_.id, notes)}
+              onKeepMine={() => resolveNotesConflict(true)}
+              onUseTheirs={() => resolveNotesConflict(false)}
+            />
+
+            <ChecklistSection
               checklist={Array.isArray(openCard_.checklist) ? openCard_.checklist : []}
               canWrite={access.canWrite}
               onAdd={text => addCheckItem(openCard_.id, text)}
@@ -2130,124 +2124,42 @@ export default function Board({
               onEdit={(itemId, text) => editCheckItem(openCard_.id, itemId, text)}
             />
 
-            {(access.canWrite || !!openCard_.attachments?.length) && <section className="kb-attachments" aria-label="Attachments">
-              {!!openCard_.attachments?.some(isPreviewImage) && <div className="kb-image-grid">
-                {openCard_.attachments.filter(isPreviewImage).map(attachment => <figure className="kb-image" key={attachment.id}>
-                  <button type="button" className="kb-image-button" aria-label={`Preview ${attachment.name || 'image'}`} onClick={() => setPreviewAttachment(attachment)}><AttachmentImage boardId={boardId} share={share} attachment={attachment} className="kb-image-preview" alt={attachment.name || 'Card image'} /></button>
-                  <figcaption title={attachment.name}>{attachment.name || 'Image'}</figcaption>
-                  {access.canWrite && <button
-                    className="kb-iconbtn kb-image-remove"
-                    type="button"
-                    aria-label={`Remove ${attachment.name || 'image'}`}
-                    onClick={() => removeAttachment(openCard_.id, attachment)}
-                  ><Trash /></button>}
-                </figure>)}
-              </div>}
-              {!!openCard_.attachments?.some(attachment => !isPreviewImage(attachment)) && <div className="kb-file-list">
-                {openCard_.attachments.filter(attachment => !isPreviewImage(attachment)).map(attachment => <div className="kb-file" key={attachment.id}>
-                  <button
-                    className="kb-file-download"
-                    type="button"
-                    title={attachment.name}
-                    onClick={() => downloadAttachment(attachment)}
-                  >
-                    <Paperclip aria-hidden="true" />
-                    <span>{attachment.name || 'Attachment'}</span>
-                    <small>Download</small>
-                  </button>
-                  {access.canWrite && <button
-                    className="kb-iconbtn kb-file-remove"
-                    type="button"
-                    aria-label={`Remove ${attachment.name || 'attachment'}`}
-                    onClick={() => removeAttachment(openCard_.id, attachment)}
-                  ><Trash /></button>}
-                </div>)}
-              </div>}
-              {access.canWrite && <>
-                <input
-                  ref={fileInputRef}
-                  className="kb-visually-hidden"
-                  type="file"
-                  multiple
-                  disabled={isDraftCard || attachmentBusy}
-                  onChange={attachFromInput}
-                />
-                <button
-                  className={`kb-attach-drop${attachmentDropActive ? ' is-dragging' : ''}`}
-                  type="button"
-                  disabled={isDraftCard || attachmentBusy || (openCard_.attachments?.length || 0) >= MAX_CARD_ATTACHMENTS}
-                  onClick={() => fileInputRef.current?.click()}
-                  onDragOver={event => { if (event.dataTransfer?.types?.includes('Files')) { event.preventDefault(); setAttachmentDropActive(true) } }}
-                  onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget)) setAttachmentDropActive(false) }}
-                  onDrop={event => { event.preventDefault(); setAttachmentDropActive(false); attachFiles(event.dataTransfer?.files) }}
-                >
-                  <span className="kb-attach-drop-icon"><Paperclip aria-hidden="true" /></span>
-                  <span className="kb-attach-drop-copy">
-                    <strong>{attachmentBusy ? 'Adding files…' : 'Add attachment'}</strong>
-                    <small>{isDraftCard ? 'Add a title to attach files' : (openCard_.attachments?.length || 0) >= MAX_CARD_ATTACHMENTS
-                      ? `Limit of ${MAX_CARD_ATTACHMENTS} reached`
-                      : <>Images or files · <span className="kb-desktop-only-inline">drop or </span>paste here{openCard_.attachments?.length ? ` · ${openCard_.attachments.length} of ${MAX_CARD_ATTACHMENTS}` : ''}</>}</small>
-                  </span>
-                </button>
-              </>}
-              {attachmentError && <p className="kb-attachment-error" role="alert">{attachmentError}</p>}
-            </section>}
+            <PullRequestSection card={openCard_} canWrite={access.canWrite} online={online} statuses={pullStatuses}
+              onUpdate={(previousUrl, nextUrl) => mutateCard({ type: 'edit-pull-request', cardId: openCard_.id, previousUrl, nextUrl })}
+              onRefresh={() => setPullStatusRefresh(value => value + 1)} />
 
-            <div className="kb-property-list">
-              <div className="kb-property-row">
-                <span className="kb-property-label">Due date</span>
-                <input
-                  className="kb-property-control kb-date-input"
-                  type="date"
-                  value={openCard_.due || ''}
-                  aria-label="Card due date"
-                  readOnly={!access.canWrite}
-                  onChange={event => updateCard(openCard_.id, { due: event.target.value })}
-                />
-              </div>
-            </div>
-
-            <PullRequestReferences card={openCard_} canWrite={access.canWrite} online={online} statuses={pullStatuses} onUpdate={(previousUrl, nextUrl) => mutateCard({ type: 'edit-pull-request', cardId: openCard_.id, previousUrl, nextUrl })} onRefresh={() => setPullStatusRefresh(value => value + 1)} />
+            {access.canWrite && <input
+              ref={fileInputRef}
+              className="kb-visually-hidden"
+              type="file"
+              multiple
+              tabIndex={-1}
+              disabled={isDraftCard || attachmentBusy}
+              onChange={attachFromInput}
+            />}
+            <AttachmentsSection
+              boardId={boardId}
+              share={share}
+              attachments={openCard_.attachments || []}
+              canWrite={access.canWrite}
+              isDraft={isDraftCard}
+              busy={attachmentBusy}
+              error={attachmentError}
+              onPick={() => fileInputRef.current?.click()}
+              onPreview={attachment => setPreviewAttachment(attachment)}
+              onDownload={downloadAttachment}
+              onRemove={attachment => removeAttachment(openCard_.id, attachment)}
+            />
 
             {!isDraftCard && <>
-            {openCardColumn && <div className="kb-status-block kb-mobile-only">
-              <h3>Status</h3>
-              {access.canWrite ? <div className="kb-status-seg" role="radiogroup" aria-label="Card status">
-                {board.columns.map(column => {
-                  const here = column.cardIds.includes(openCard_.id)
-                  return <button
-                    key={column.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={here}
-                    className={here ? 'is-active' : ''}
-                    onClick={() => { if (!here) { moveCard(openCard_.id, column.id, null); setOpenCardId(null) } }}
-                  >{column.name}</button>
-                })}
-              </div> : <div className="kb-property-row kb-status-readonly">
-                <span className="kb-property-label">Status</span>
-                <span className="kb-property-value">{openCardColumn.name}</span>
-              </div>}
-            </div>}
-
-            {access.canWrite && <div className="kb-desktop-only">
-              <h3>Move to</h3>
-              <div className="kb-chips kb-field-spaced">
-                {board.columns.map(c => {
-                  const here = c.cardIds.includes(openCard_.id)
-                  return (
-                    <button
-                      key={c.id}
-                      className={`kb-chip${here ? ' kb-on' : ''}`}
-                      disabled={here}
-                      onClick={() => { moveCard(openCard_.id, c.id, null); setOpenCardId(null) }}
-                    >
-                      {c.name}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>}
+            <CardActivity
+              card={openCard_}
+              timeline={openTimeline}
+              status={openDetails?.status || 'loading'}
+              canWrite={access.canWrite}
+              nameFor={nameForRef}
+              onRestore={ref => assignCard(openCard_.id, ref)}
+            />
             {access.canWrite && (confirmDeleteCard
               ? <div ref={cardDeleteConfirmRef} tabIndex={-1} className="kb-col-confirm kb-card-delete-confirm" role="alertdialog" aria-modal="true" aria-label="Delete card">
                 <div className="kb-col-confirm-copy">Delete this card{share ? ' for everyone on this board' : ''}? This can’t be undone.</div>
@@ -2261,10 +2173,21 @@ export default function Board({
                   <Trash aria-hidden="true" />
                   Delete card
                 </button>
+                {createdLabel && <span className="kb-card-created">{createdLabel}</span>}
               </div>)}
+            {!access.canWrite && createdLabel && <div className="kb-card-danger-zone"><span className="kb-card-created">{createdLabel}</span></div>}
             </>}
           </div>
         </>
+      )}
+
+      {assignmentUndo && (
+        <div className="kb-undo-toast" role="status">
+          <span>{hasAssignment(assignmentUndo.to)
+            ? `Replaced ${nameForRef(assignmentUndo.from)} with ${nameForRef(assignmentUndo.to)}`
+            : `Removed ${nameForRef(assignmentUndo.from)} from this card`}</span>
+          <button type="button" className="kb-undo-action" onClick={undoAssignment}>Undo</button>
+        </div>
       )}
 
       {previewAttachment && (

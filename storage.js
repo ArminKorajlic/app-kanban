@@ -121,6 +121,78 @@ export function saveLastBoardId(lastBoardId) {
   return task
 }
 
+// Read-modify-write one app document under compare-and-swap. `update` returns
+// the next value, or undefined when nothing needs saving.
+async function updateDocument(path, update, s = store()) {
+  if (!s) return null
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const { value, version } = await s.getWithVersion(path)
+    const next = update(value)
+    if (next === undefined) return value
+    try {
+      await s.durableWrite(path, next, version ? { ifMatch: version } : { ifNoneMatch: true })
+      return next
+    } catch (error) {
+      if (error?.code === 'conflict') continue
+      throw error
+    }
+  }
+  throw new Error(`Could not save ${path} after repeated conflicts.`)
+}
+
+let boardViewChain = Promise.resolve()
+
+// The All / Mine / Unassigned choice is personal: it is remembered per board on
+// this Möbius and never written into a shared board.
+export function saveBoardView(boardId, view) {
+  const task = boardViewChain.catch(() => {}).then(() => updateDocument('ui.json', value => {
+    const next = structuredClone(normalizeUi(value))
+    const views = next.boardViews && typeof next.boardViews === 'object' && !Array.isArray(next.boardViews) ? next.boardViews : {}
+    next.boardViews = { ...views, [boardId]: view }
+    return next
+  }))
+  boardViewChain = task
+  return task
+}
+
+let collapsedListsChain = Promise.resolve()
+
+// Folded lists are a personal viewing choice, remembered per board on this
+// Möbius and never written into a (shared) board.
+export function saveCollapsedLists(boardId, columnIds) {
+  const task = collapsedListsChain.catch(() => {}).then(() => updateDocument('ui.json', value => {
+    const next = structuredClone(normalizeUi(value))
+    const folded = next.collapsedLists && typeof next.collapsedLists === 'object' && !Array.isArray(next.collapsedLists) ? next.collapsedLists : {}
+    next.collapsedLists = { ...folded, [boardId]: [...new Set(columnIds)] }
+    return next
+  }))
+  collapsedListsChain = task
+  return task
+}
+
+export const assignmentLogPath = id => `assignments/${id}.json`
+
+export async function loadAssignmentLog(boardId) {
+  return (await store()?.get(assignmentLogPath(boardId))) || null
+}
+
+export function subscribeAssignmentLog(boardId, cb) {
+  const s = store()
+  if (!s?.subscribe) return () => {}
+  return s.subscribe(assignmentLogPath(boardId), value => cb(value || null))
+}
+
+const assignmentLogChains = new Map()
+
+// `observe(previous)` returns the next log or undefined when it is current.
+// Writes for one board are serialized; other frames are reconciled by CAS.
+export function updateAssignmentLog(boardId, observe) {
+  const previous = assignmentLogChains.get(boardId) || Promise.resolve()
+  const task = previous.catch(() => {}).then(() => updateDocument(assignmentLogPath(boardId), observe))
+  assignmentLogChains.set(boardId, task)
+  return task
+}
+
 export const boardPath = id => `boards/${id}.json`
 
 async function boardsFromEntries(entries, s) {

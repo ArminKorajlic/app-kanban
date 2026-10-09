@@ -1,9 +1,21 @@
 // Board authority belongs here, not to the UI or a caller's guessed file.
 // The storage adapter differs between browser and CLI; board semantics do not.
-import { boardPath, normalizeBoard, casMutate } from './storage.js'
-import { pullShared, pushSharedOp } from './sync.js'
+import { boardPath, normalizeBoard, casMutate, uid } from './storage.js'
+import { pullShared, pushSharedOp, readSharedCard, writeSharedNotes, appendSharedActivity, cardDetailsUnsupported } from './sync.js'
+import { activityPath, cardSnapshot, createActivityEntries, describeCardChange, mergeActivity, operationCardId } from './activity.js'
 import { PUBLICATION, publicationPending } from './publication.js'
-import { applyBoardOp } from './operations.js'
+import { applyBoardOp, completeCardNotes } from './operations.js'
+
+const touchesNotes = op => op?.type === 'complete-card'
+  || (op?.type === 'update-card' && op.patch && Object.hasOwn(op.patch, 'notes'))
+
+// The board part of an operation whose description was saved separately;
+// null when nothing else remains to write.
+function withoutNotes(op) {
+  if (op.type !== 'update-card') return op
+  const { notes, ...patch } = op.patch
+  return Object.keys(patch).length ? { ...op, patch } : null
+}
 
 const RESERVED_IDS = new Set(['__proto__', 'prototype', 'constructor'])
 
@@ -33,7 +45,8 @@ function validId(value) {
   return typeof value === 'string' && value.trim() !== '' && !RESERVED_IDS.has(value)
 }
 
-export function createBoardRepository({ storage, request = globalThis.fetch }) {
+// `via: 'agent'` marks activity recorded by the agent helper rather than the app.
+export function createBoardRepository({ storage, request = globalThis.fetch, via = '' }) {
   async function sharingMap() {
     // A failed lookup must never be interpreted as "private".
     const { value } = await storage.getWithVersion('shared.json')
@@ -83,31 +96,53 @@ export function createBoardRepository({ storage, request = globalThis.fetch }) {
   async function mutate(boardId, op, { sharedState = null } = {}) {
     const entry = await authority(boardId)
     if (entry && entry.role !== 'editor') throw boardError('This shared board is read-only.', 'read-only')
+    // On a shared board a description is saved on its own, version-checked and
+    // outside the capped document; the board operation then carries the rest.
+    // `null` means the host predates card details, so the old path applies.
+    let notesChanged = false
+    let boardOp = op
+    if (entry && touchesNotes(op)) {
+      const saved = await saveSharedNotesFor(entry, op)
+      if (saved !== null) {
+        notesChanged = saved
+        boardOp = withoutNotes(op)
+        sharedState = null
+      }
+    }
+    // The last attempt's before/after snapshots describe what actually landed;
+    // a CAS retry re-runs `apply` against the fresher document.
+    let change = null
     const apply = doc => {
       if (!entry && doc[PUBLICATION]) throw publicationPending()
-      if (op.type === 'add-card' && !validId(op.card?.id)) throw boardError('Card id is invalid.', 'invalid-operation')
-      if (op.cardId && !validId(op.cardId)) throw boardError('Card id is invalid.', 'invalid-operation')
-      if (op.type === 'add-card' && Object.hasOwn(doc.cards, op.card.id)) return doc
-      if (op.type === 'add-card' && !doc.columns.some(c => c.id === op.columnId)) {
+      if (boardOp.type === 'add-card' && !validId(boardOp.card?.id)) throw boardError('Card id is invalid.', 'invalid-operation')
+      if (boardOp.cardId && !validId(boardOp.cardId)) throw boardError('Card id is invalid.', 'invalid-operation')
+      if (boardOp.type === 'add-card' && Object.hasOwn(doc.cards, boardOp.card.id)) return doc
+      if (boardOp.type === 'add-card' && !doc.columns.some(c => c.id === boardOp.columnId)) {
         throw boardError('Target column no longer exists.', 'missing-column')
       }
-      if (op.cardId && op.type !== 'delete-card' && !Object.hasOwn(doc.cards, op.cardId)) {
+      if (boardOp.cardId && boardOp.type !== 'delete-card' && !Object.hasOwn(doc.cards, boardOp.cardId)) {
         throw boardError('Card no longer exists.', 'missing-card')
       }
-      if (op.type === 'complete-card'
-        && String(doc.cards[op.cardId].title || '').trim() !== op.expectedTitle) {
+      if (boardOp.type === 'complete-card'
+        && String(doc.cards[boardOp.cardId].title || '').trim() !== boardOp.expectedTitle) {
         throw boardError('Card title changed before completion; no card was changed.', 'card-title-changed')
       }
-      if (op.type === 'move-card' && !doc.columns.some(c => c.id === op.toColumnId)) {
+      if (boardOp.type === 'move-card' && !doc.columns.some(c => c.id === boardOp.toColumnId)) {
         throw boardError('Target column no longer exists.', 'missing-column')
       }
-      return applyBoardOp(doc, op)
+      const cardId = operationCardId(boardOp)
+      const before = cardSnapshot(doc, cardId)
+      const next = applyBoardOp(doc, boardOp) || doc
+      change = { cardId, before, after: cardSnapshot(next, cardId) }
+      return next
     }
     let error
     const onError = cause => { error = cause }
-    const landed = entry
-      ? await pushSharedOp(entry, apply, onError, request, sharedState)
-      : await casMutate(boardId, apply, onError, storage).then(doc => doc && ({ doc }))
+    const landed = !boardOp
+      ? await pullShared(entry, -1, request).then(state => ({ doc: normalizeBoard(state.doc), version: state.version }))
+      : entry
+        ? await pushSharedOp(entry, apply, onError, request, sharedState)
+        : await casMutate(boardId, apply, onError, storage).then(doc => doc && ({ doc }))
     if (!landed && entry && ['read-only', 'membership-revoked'].includes(error?.code)) {
       throw boardError('This shared board is read-only.', 'read-only')
     }
@@ -118,8 +153,111 @@ export function createBoardRepository({ storage, request = globalThis.fetch }) {
     // Only a confirmed shared write may refresh the offline copy. Cache failure
     // cannot turn a committed operation into a failed operation.
     if (entry) await storage.set(boardPath(boardId), landed.doc).catch(() => {})
-    return { ...landed, authority: entry ? 'shared' : 'private',
+    const cardId = operationCardId(op)
+    const drafts = [
+      ...(change ? describeCardChange({ op, before: change.before, after: change.after }) : []),
+      ...(notesChanged && op.type !== 'complete-card' ? [{ type: 'notes' }] : []),
+    ]
+    const activity = await recordActivity(boardId, entry, op, cardId, drafts)
+    return { ...landed, activity, authority: entry ? 'shared' : 'private',
       ...(entry ? { host: entry.host, oid: entry.oid } : {}) }
   }
-  return { list, read, mutate }
+
+  async function saveSharedNotesFor(entry, op) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      let card
+      try {
+        card = await readSharedCard(entry, op.cardId, request)
+      } catch (error) {
+        if (cardDetailsUnsupported(error)) return null
+        throw error
+      }
+      if (typeof card.notes !== 'string') throw boardError('Card no longer exists.', 'missing-card')
+      const next = op.type === 'complete-card'
+        ? completeCardNotes(card.notes, { summary: op.summary, link: op.link ?? op.prUrl ?? '' })
+        : String(op.patch.notes ?? '')
+      if (next === card.notes) return false
+      const result = await writeSharedNotes(entry, op.cardId, next, card.notes_version, request)
+      if (result.status !== 'conflict') return true
+    }
+    throw boardError('The description kept changing while saving; try again.', 'notes-conflict')
+  }
+
+  // Activity is a record of a committed edit, never a condition for it: a
+  // failure here is reported in the result and the edit stands.
+  async function recordActivity(boardId, entry, op, cardId, drafts) {
+    // A shared host prunes a deleted card's details itself (collaboration/service.py).
+    if (op.type === 'delete-card' && !entry && validId(op.cardId)) {
+      await Promise.resolve(storage.remove?.(activityPath(boardId, op.cardId))).catch(() => {})
+    }
+    if (!cardId || !drafts.length) return { cardId: cardId || null, entries: [], status: 'none' }
+    const entries = createActivityEntries(drafts, { via, makeId: uid })
+    try {
+      const saved = entry
+        ? await appendSharedActivity(entry, cardId, entries, request)
+        : await appendPrivateActivity(boardId, cardId, entries)
+      return { cardId, entries: saved, status: 'saved' }
+    } catch (error) {
+      return { cardId, entries, status: cardDetailsUnsupported(error) ? 'unsupported' : 'failed' }
+    }
+  }
+
+  async function appendPrivateActivity(boardId, cardId, entries) {
+    const path = activityPath(boardId, cardId)
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const { value, version } = await storage.getWithVersion(path)
+      const merged = mergeActivity(value?.entries, entries)
+      try {
+        await storage.durableWrite(path, { v: 1, entries: merged }, version ? { ifMatch: version } : { ifNoneMatch: true })
+        return merged
+      } catch (error) {
+        if (error?.code !== 'conflict') throw error
+      }
+    }
+    throw boardError('Could not save card activity after repeated conflicts.', 'activity-conflict')
+  }
+
+  // What the board document does not carry: a long description's full text
+  // (shared boards only; `notes` is null when the board's copy is complete)
+  // and the card's activity. `status: 'unsupported'` means the board's host
+  // runs a Kanban without card details.
+  async function readCard(boardId, cardId) {
+    if (!validId(cardId)) throw boardError('Card id is invalid.', 'invalid-operation')
+    const entry = await authority(boardId)
+    if (!entry) {
+      const { value } = await storage.getWithVersion(activityPath(boardId, cardId))
+      return { status: 'ok', notes: null, notesVersion: null, activity: mergeActivity(value?.entries, []) }
+    }
+    try {
+      const card = await readSharedCard(entry, cardId, request)
+      return { status: 'ok', notes: typeof card.notes === 'string' ? card.notes : null,
+        notesVersion: Number.isInteger(card.notes_version) ? card.notes_version : 0,
+        activity: mergeActivity(card.activity, []) }
+    } catch (error) {
+      if (cardDetailsUnsupported(error)) return { status: 'unsupported', notes: null, notesVersion: null, activity: [] }
+      throw error
+    }
+  }
+
+  // The card sheet's description save. On a shared board it is checked
+  // against the version the editor started from, so a concurrent edit comes
+  // back as `{ status: 'conflict', notes, notesVersion }` instead of being
+  // overwritten. Private boards and older hosts save through the board.
+  async function saveNotes(boardId, cardId, notes, expectedVersion) {
+    const entry = await authority(boardId)
+    const throughBoard = async () => ({ status: 'saved', ...(await mutate(boardId, { type: 'update-card', cardId, patch: { notes } })) })
+    if (!entry || !Number.isInteger(expectedVersion)) return throughBoard()
+    if (entry.role !== 'editor') throw boardError('This shared board is read-only.', 'read-only')
+    let result
+    try {
+      result = await writeSharedNotes(entry, cardId, notes, expectedVersion, request)
+    } catch (error) {
+      if (cardDetailsUnsupported(error)) return throughBoard()
+      throw error
+    }
+    if (result.status === 'conflict') return { status: 'conflict', notes: result.notes, notesVersion: result.notes_version }
+    const activity = await recordActivity(boardId, entry, { type: 'update-card', cardId }, cardId, [{ type: 'notes' }])
+    return { status: 'saved', card: result.card, notesVersion: result.notes_version, version: result.version, activity }
+  }
+  return { list, read, mutate, readCard, saveNotes }
 }

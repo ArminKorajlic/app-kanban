@@ -137,3 +137,22 @@ test('saved assignee handles survive stale member records without matching names
   assert.equal(cardAssigneeLabel(card, [{ host: 'linked.example', hosts: [host], handle: 'alice' }]), '@alice')
   assert.equal(cardAssigneeLabel({ assignee: 'Alex' }, [{ host: 'other.example', name: 'Alex', handle: 'bob' }]), 'Alex')
 })
+
+test('board size is measured the way the host measures it', async () => {
+  const { hostDocumentBytes, boardCapacity, SHARED_BOARD_LIMIT_BYTES } = await import('../domain.js')
+  const { execFileSync } = await import('node:child_process')
+  const doc = { v: 1, title: 'Board — “quotes”', columns: [{ id: 'a', name: 'To do', cardIds: ['c'] }],
+    cards: { c: { id: 'c', title: '✅ Done 🚀', notes: 'line\nline "two" \\ tab\t', due: '', done: true, n: 12, x: null, list: [] } } }
+  const python = Number(execFileSync('python3', ['-c', 'import json,sys; print(len(json.dumps(json.load(sys.stdin)).encode()))'], { input: JSON.stringify(doc) }).toString())
+  assert.equal(hostDocumentBytes(doc), python)
+  assert.equal(boardCapacity({ cards: { a: { notes: 'x'.repeat(SHARED_BOARD_LIMIT_BYTES * 0.96) } } }).nearlyFull, true)
+  assert.equal(boardCapacity({ cards: { a: { notes: 'x'.repeat(SHARED_BOARD_LIMIT_BYTES * 0.9) } } }).nearlyFull, false)
+})
+
+test('a shared board also warns when its attachment space is nearly used up', async () => {
+  const { boardCapacity } = await import('../domain.js')
+  const cards = n => Object.fromEntries(Array.from({ length: n }, (_, i) => [`c${i}`, { id: `c${i}`, attachments: [{ id: `a${i}`, size: 1000 }] }]))
+  assert.equal(boardCapacity({ cards: cards(94) }).filesNearlyFull, false)
+  assert.equal(boardCapacity({ cards: cards(95) }).filesNearlyFull, true)
+  assert.equal(boardCapacity({ cards: { a: { attachments: [{ id: 'big', size: 96 * 1024 * 1024 }] } } }).filesNearlyFull, true)
+})
