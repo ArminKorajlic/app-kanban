@@ -47,6 +47,14 @@ ACTIVITY_TYPES = frozenset((
 ACTIVITY_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 CARD_ID = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
 PRESENCE_TTL = 12
+# Members poll every 1-3 s. Persisting `seen` only once it is this old keeps
+# every polling member inside PRESENCE_TTL while most polls write nothing. It
+# stays at a third of the TTL so a lost poll on a slow link (up to the 10 s
+# request timeout) still leaves the saved age inside it.
+SEEN_REFRESH = 4
+# Operations that change nothing but presence; they skip the write lock unless
+# presence or the display name actually needs persisting.
+READ_ONLY_OPS = ('state', 'asset-read')
 INVITE_TTL = 7 * 86400
 
 
@@ -177,6 +185,37 @@ class Service:
         if not m or not secrets.compare_digest(m.get('credential_hash',''), digest(credential)):
             fail(403, 'membership-revoked', 'This board credential is not authorized.')
         return m
+
+    def presence_changes(self, member, name):
+        """Return the presence fields worth persisting for this request."""
+        changes = {}
+        now = self.now()
+        if not 0 <= now - member.get('seen', 0) < SEEN_REFRESH:
+            changes['seen'] = now
+        if name and member.get('name') != name:
+            changes['name'] = name
+        return changes
+
+    @staticmethod
+    def claimed_name(body):
+        name = body.get('name')
+        return name.strip()[:128] if isinstance(name, str) and name.strip() else None
+
+    def peer_read(self, oid, op, body):
+        """Answer a member's read-only request without the write lock.
+
+        Returns None when presence or the name must be persisted; the caller
+        then takes the transactional path, which re-checks the membership.
+        """
+        row = self.board(oid)
+        mid = check(body.get('member_id'),ID,'member id')
+        credential = check(body.get('credential'),SECRET,'member credential')
+        member = self.member(row,mid,credential)
+        if member.get('pending'):
+            fail(409,'invitation-pending','Accept the invitation before using this board.')
+        if self.presence_changes(member, self.claimed_name(body)):
+            return None
+        return self.operation(row,op,body,{'host':member['host'],'name':member.get('name')})
 
     def state(self, row, since=-1):
         result = {'status':'ok', 'version':row['version'], 'object':self.public(row)}
@@ -374,6 +413,10 @@ class Service:
 
     def peer(self, oid, body):
         op = body.get('op')
+        if op in READ_ONLY_OPS:
+            result = self.peer_read(oid, op, body)
+            if result is not None:
+                return result
         with self.store.transaction():
             row = self.board(oid)
             mid = check(body.get('member_id'),ID,'member id')
@@ -418,11 +461,11 @@ class Service:
                 fail(400,'invalid-operation','Unsupported board operation.')
             if op in ('write','asset-write','asset-delete','notes-write','activity-append') and member['role'] != 'editor':
                 fail(403,'read-only','This board member is a viewer.')
-            member['seen'] = self.now()
-            if isinstance(body.get('name'), str) and body['name'].strip():
-                member['name'] = body['name'].strip()[:128]
+            changes = self.presence_changes(member, self.claimed_name(body))
+            member.update(changes)
             result = self.operation(row,op,body,{'host':member['host'],'name':member.get('name')})
-            self.store.put('board',oid,row)
+            if changes or op not in READ_ONLY_OPS:
+                self.store.put('board',oid,row)
             return result
 
     def card_record(self, row, card_id):
@@ -561,12 +604,17 @@ class Service:
     async def state_operation(self, host, oid, op, body):
         check(host,HOST,'board host'); check(oid,ID,'board id')
         if host == self.host:
+            if op in READ_ONLY_OPS:
+                row = self.board(oid)
+                if not self.presence_changes(row['members'][self.host], self.owner_name):
+                    return self.operation(row,op,body,{'host':self.host,'name':self.owner_name})
             with self.store.transaction():
                 row = self.board(oid)
-                row['members'][self.host]['name'] = self.owner_name
-                row['members'][self.host]['seen'] = self.now()
+                changes = self.presence_changes(row['members'][self.host], self.owner_name)
+                row['members'][self.host].update(changes)
                 result = self.operation(row,op,body,{'host':self.host,'name':self.owner_name})
-                self.store.put('board',oid,row)
+                if changes or op not in READ_ONLY_OPS:
+                    self.store.put('board',oid,row)
                 return result
         member = self.store.get('joined',host+'/'+oid)
         if not member or member['status']!='joined':
