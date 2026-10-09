@@ -203,8 +203,8 @@ try {
     if (!card) throw new Error('Card was not found on this board.')
     const details = await repository.readCard(boardId, cardIdArg)
     const { notesLength, ...rest } = card
-    result = { boardId, card: { ...rest, notes: details.notes ?? card.notes }, activity: details.activity,
-      cardDetails: details.status }
+    result = { boardId, card: { ...rest, notes: details.notes ?? card.notes }, notesVersion: details.notesVersion,
+      activity: details.activity, cardDetails: details.status }
   }
   else if (command === 'set-checklist-item' && validId(boardId)) {
     const data = await input()
@@ -238,7 +238,9 @@ try {
       const fields = ['title', 'notes', 'label', 'due', 'assignee', 'assigneeHost', 'pullRequestUrl', 'pullRequestUrls']
       if (Object.keys(data.patch).some(key => !fields.includes(key))) throw new Error('Patch must contain editable card fields only.')
       validatePatch(data.patch)
-      op = { type: command, cardId: data.cardId, patch: data.patch }
+      if (data.notesVersion !== undefined && !Number.isInteger(data.notesVersion)) throw new Error('notesVersion must be the whole number read-card returned.')
+      op = { type: command, cardId: data.cardId, patch: data.patch,
+        ...(Number.isInteger(data.notesVersion) ? { notesVersion: data.notesVersion } : {}) }
     } else {
       if (!validId(data.cardId) || !validId(data.toColumnId)
         || (data.beforeCardId != null && !validId(data.beforeCardId))) throw new Error('cardId and toColumnId are required, with an optional safe beforeCardId.')

@@ -689,6 +689,10 @@ export default function Board({
   const [columnDrag, setColumnDrag] = useState(null) // { columnId, dx, overIndex }
   const [notesConflict, setNotesConflict] = useState(null)
   const [notesError, setNotesError] = useState('')
+  // The description version the open editor started from (see saveCardNotes),
+  // and this frame's own saves as `${cardId}\0${from}` → to.
+  const notesEditBaseRef = useRef(null)
+  const ownNotesSavesRef = useRef(new Map())
 
   const boardRef = useRef(null)
   const boardScrollRef = useRef(null)
@@ -727,7 +731,11 @@ export default function Board({
     }
   }
 
-  useEffect(() => { detailsCacheRef.current = new Map() }, [boardId])
+  useEffect(() => {
+    detailsCacheRef.current = new Map()
+    notesEditBaseRef.current = null
+    ownNotesSavesRef.current = new Map()
+  }, [boardId])
 
   // Loads on open and again when the card's description changes on the board
   // (someone else saved it); a cached copy shows at once in the meantime.
@@ -1323,10 +1331,18 @@ export default function Board({
   }
 
   // A shared card's description is saved beside the board, checked against
-  // the version this editor loaded, so a concurrent edit becomes a visible
-  // choice instead of a silent overwrite. Drafts, private boards and hosts
-  // without card details save through the board as before.
-  const saveCardNotes = (cardId, notes) => {
+  // the version its editor started from, so a concurrent edit becomes a
+  // visible choice instead of a silent overwrite. The start is captured on
+  // focus: the board refreshes while someone types and reloads the details,
+  // so the newest known version would accept any stale text. Drafts, private
+  // boards and hosts without card details save through the board as before.
+  const beginNotesEdit = cardId => {
+    const details = cardDetailsRef.current?.cardId === cardId ? cardDetailsRef.current : null
+    notesEditBaseRef.current = { cardId, version: details?.notesVersion ?? null }
+  }
+  const notesEditBase = cardId => (notesEditBaseRef.current?.cardId === cardId ? notesEditBaseRef.current.version : null)
+
+  const saveCardNotes = (cardId, notes, baseVersion) => {
     const entry = shareRef.current
     const details = cardDetailsRef.current?.cardId === cardId ? cardDetailsRef.current : null
     if (!entry || !boardRef.current?.cards?.[cardId] || details?.status !== 'ok') return updateCard(cardId, { notes })
@@ -1336,11 +1352,18 @@ export default function Board({
     updateDetails(cardId, current => ({ ...current, notes }))
     writeChain.current = writeChain.current.catch(() => {}).then(async () => {
       try {
-        const expected = cardDetailsRef.current?.cardId === cardId ? cardDetailsRef.current.notesVersion : details.notesVersion
+        // An own save that landed after this edit began moved the version on
+        // without changing the text the editor showed, so follow it.
+        const own = ownNotesSavesRef.current
+        let expected = baseVersion
+        while (Number.isInteger(expected) && own.has(`${cardId}\u0000${expected}`)) expected = own.get(`${cardId}\u0000${expected}`)
         const result = await createBoardRepository({ storage: window.mobius.storage }).saveNotes(boardId, cardId, notes, expected)
         if (result.status === 'conflict') {
           setNotesConflict({ cardId, mine: notes, theirs: result.notes, notesVersion: result.notesVersion })
           return
+        }
+        if (Number.isInteger(expected) && Number.isInteger(result.notesVersion) && result.notesVersion > expected) {
+          own.set(`${cardId}\u0000${expected}`, result.notesVersion)
         }
         if (Number.isInteger(result.notesVersion)) updateDetails(cardId, current => ({ ...current, notesVersion: result.notesVersion }))
         noteActivity(result.activity)
@@ -1356,7 +1379,8 @@ export default function Board({
       } catch (error) {
         setNotesError(error?.code === 'notes-too-long'
           ? `A description can be at most ${MAX_NOTES_CHARS.toLocaleString()} characters. Put longer text in an attachment.`
-          : 'The description wasn’t saved. Check your connection and try again.')
+          : error?.retryable === false ? String(error.message)
+            : 'The description wasn’t saved. Check your connection and try again.')
         window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'save-description' })
       }
     })
@@ -1368,7 +1392,8 @@ export default function Board({
     if (!conflict) return
     setNotesConflict(null)
     updateDetails(conflict.cardId, current => ({ ...current, notes: conflict.theirs, notesVersion: conflict.notesVersion }))
-    if (keepMine) saveCardNotes(conflict.cardId, conflict.mine)
+    // Keep mine deliberately replaces the text the conflict showed.
+    if (keepMine) saveCardNotes(conflict.cardId, conflict.mine, conflict.notesVersion)
   }
 
   // Every assignment change on a saved card records who made it. Taking a
@@ -2108,9 +2133,11 @@ export default function Board({
               canWrite={access.canWrite}
               editable={!hasExternalNotes(openCard_) || openDetails?.status === 'ok'}
               loading={hasExternalNotes(openCard_) && (!openDetails || openDetails.status === 'loading')}
+              maxLength={share ? MAX_NOTES_CHARS : null}
               conflict={notesConflict?.cardId === openCard_.id}
               error={notesError}
-              onCommit={notes => saveCardNotes(openCard_.id, notes)}
+              onEditStart={() => beginNotesEdit(openCard_.id)}
+              onCommit={notes => saveCardNotes(openCard_.id, notes, notesEditBase(openCard_.id))}
               onKeepMine={() => resolveNotesConflict(true)}
               onUseTheirs={() => resolveNotesConflict(false)}
             />

@@ -62,27 +62,44 @@ class CardDetails(unittest.IsolatedAsyncioTestCase):
         return await self.call(service, 'PUT', f'{self.base}/state', {'doc': doc, 'expected_version': state['version']}, status)
 
     async def test_long_description_moves_out_of_the_board_and_reads_back_whole(self):
-        await self.write(self.a, board(LONG))
+        written = await self.write(self.a, board(LONG))
         card = (await self.call(self.a, 'GET', f'{self.base}/state'))['doc']['cards']['c1']
         self.assertEqual(card['notesLength'], len(LONG))
         self.assertLessEqual(len(card['notes']), NOTES_PREVIEW_CHARS)
         self.assertTrue(card['notes'].endswith('…'))
+        # The writer gets the host's copy back, or it would keep full text the board no longer carries.
+        self.assertEqual(written['doc']['cards']['c1'], card)
         details = await self.call(self.a, 'GET', f'{self.base}/cards/c1')
         self.assertEqual(details['notes'], LONG)
+        self.assertIs(details['external'], True)
 
     async def test_short_description_stays_on_the_board(self):
-        await self.write(self.a, board('Short note'))
+        written = await self.write(self.a, board('Short note'))
+        self.assertNotIn('doc', written)
         card = (await self.call(self.a, 'GET', f'{self.base}/state'))['doc']['cards']['c1']
         self.assertEqual(card['notes'], 'Short note')
         self.assertNotIn('notesLength', card)
+        self.assertIs((await self.call(self.a, 'GET', f'{self.base}/cards/c1'))['external'], False)
+
+    async def test_writer_resending_the_full_text_it_held_before_the_move_is_not_an_edit(self):
+        await self.write(self.a, board(LONG))
+        version = (await self.call(self.a, 'GET', f'{self.base}/state'))['version']
+        before = await self.call(self.a, 'GET', f'{self.base}/cards/c1')
+        stale = board(LONG)
+        stale['title'] = 'Renamed'
+        written = await self.call(self.a, 'PUT', f'{self.base}/state', {'doc': stale, 'expected_version': version})
+        self.assertEqual(written['doc']['cards']['c1']['notesLength'], len(LONG))
+        after = await self.call(self.a, 'GET', f'{self.base}/cards/c1')
+        self.assertEqual((after['notes'], after['notes_version']), (LONG, before['notes_version']))
 
     async def test_older_kanban_cannot_truncate_a_moved_out_description(self):
         await self.write(self.a, board(LONG))
         state = await self.call(self.a, 'GET', f'{self.base}/state')
         older = state['doc']
         older['cards']['c1']['notes'] = older['cards']['c1']['notes'] + ' edited preview'
-        refused = await self.call(self.a, 'PUT', f'{self.base}/state', {'doc': older, 'expected_version': state['version']}, 409)
-        self.assertEqual(refused['code'], 'notes-external')
+        refused = await self.call(self.a, 'PUT', f'{self.base}/state', {'doc': older, 'expected_version': state['version']}, 403)
+        # An older Kanban treats 'read-only' as final; any other code it retries forever.
+        self.assertEqual(refused['code'], 'read-only')
         self.assertEqual((await self.call(self.a, 'GET', f'{self.base}/cards/c1'))['notes'], LONG)
 
     async def test_description_save_is_version_checked_and_updates_the_preview(self):

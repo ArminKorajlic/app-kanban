@@ -524,7 +524,10 @@ export async function pushSharedOp(entry, op, onError, request = fetch, confirme
         state = rememberSharedState(null, entry, res)
         continue
       }
-      return { doc: next, version: res.version }
+      // The host may move long descriptions out of the board while writing
+      // (collaboration/service.py settle_cards); it then returns its copy, which
+      // must replace ours or the next write would resend text it refuses.
+      return { doc: (res.doc && normalizeBoard(res.doc)) || next, version: res.version }
     } catch (e) {
       onError?.(e)
       return null

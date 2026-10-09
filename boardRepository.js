@@ -45,6 +45,28 @@ function validId(value) {
   return typeof value === 'string' && value.trim() !== '' && !RESERVED_IDS.has(value)
 }
 
+// Refusals that leave the board untouched. Checked on every CAS attempt and,
+// before a shared description changes, against a fresh board, so a refused
+// operation never leaves its description half-saved.
+function refuseInvalidOperation(doc, op) {
+  if (op.type === 'add-card' && !validId(op.card?.id)) throw boardError('Card id is invalid.', 'invalid-operation')
+  if (op.cardId && !validId(op.cardId)) throw boardError('Card id is invalid.', 'invalid-operation')
+  if (op.type === 'add-card' && Object.hasOwn(doc.cards, op.card.id)) return
+  if (op.type === 'add-card' && !doc.columns.some(c => c.id === op.columnId)) {
+    throw boardError('Target column no longer exists.', 'missing-column')
+  }
+  if (op.cardId && op.type !== 'delete-card' && !Object.hasOwn(doc.cards, op.cardId)) {
+    throw boardError('Card no longer exists.', 'missing-card')
+  }
+  if (op.type === 'complete-card'
+    && String(doc.cards[op.cardId].title || '').trim() !== op.expectedTitle) {
+    throw boardError('Card title changed before completion; no card was changed.', 'card-title-changed')
+  }
+  if (op.type === 'move-card' && !doc.columns.some(c => c.id === op.toColumnId)) {
+    throw boardError('Target column no longer exists.', 'missing-column')
+  }
+}
+
 // `via: 'agent'` marks activity recorded by the agent helper rather than the app.
 export function createBoardRepository({ storage, request = globalThis.fetch, via = '' }) {
   async function sharingMap() {
@@ -102,6 +124,9 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
     let notesChanged = false
     let boardOp = op
     if (entry && touchesNotes(op)) {
+      const current = normalizeBoard((await pullShared(entry, -1, request)).doc)
+      if (!current) throw new Error('Board not found or unavailable.')
+      refuseInvalidOperation(current, op)
       const saved = await saveSharedNotesFor(entry, op)
       if (saved !== null) {
         notesChanged = saved
@@ -114,22 +139,8 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
     let change = null
     const apply = doc => {
       if (!entry && doc[PUBLICATION]) throw publicationPending()
-      if (boardOp.type === 'add-card' && !validId(boardOp.card?.id)) throw boardError('Card id is invalid.', 'invalid-operation')
-      if (boardOp.cardId && !validId(boardOp.cardId)) throw boardError('Card id is invalid.', 'invalid-operation')
+      refuseInvalidOperation(doc, boardOp)
       if (boardOp.type === 'add-card' && Object.hasOwn(doc.cards, boardOp.card.id)) return doc
-      if (boardOp.type === 'add-card' && !doc.columns.some(c => c.id === boardOp.columnId)) {
-        throw boardError('Target column no longer exists.', 'missing-column')
-      }
-      if (boardOp.cardId && boardOp.type !== 'delete-card' && !Object.hasOwn(doc.cards, boardOp.cardId)) {
-        throw boardError('Card no longer exists.', 'missing-card')
-      }
-      if (boardOp.type === 'complete-card'
-        && String(doc.cards[boardOp.cardId].title || '').trim() !== boardOp.expectedTitle) {
-        throw boardError('Card title changed before completion; no card was changed.', 'card-title-changed')
-      }
-      if (boardOp.type === 'move-card' && !doc.columns.some(c => c.id === boardOp.toColumnId)) {
-        throw boardError('Target column no longer exists.', 'missing-column')
-      }
       const cardId = operationCardId(boardOp)
       const before = cardSnapshot(doc, cardId)
       const next = applyBoardOp(doc, boardOp) || doc
@@ -163,7 +174,14 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
       ...(entry ? { host: entry.host, oid: entry.oid } : {}) }
   }
 
+  // A completion appends to the newest text, so it may follow the newest
+  // version. A replacement text is only safe against the text its author saw:
+  // when the board shows just a preview, the edit must name the version it
+  // started from (`notesVersion`). Otherwise an edited preview (an older
+  // Kanban's queued edit, or an agent working from `read` instead of
+  // `read-card`) would replace the whole description.
   async function saveSharedNotesFor(entry, op) {
+    const based = op.type === 'update-card' && Number.isInteger(op.notesVersion)
     for (let attempt = 0; attempt < 4; attempt++) {
       let card
       try {
@@ -173,12 +191,23 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
         throw error
       }
       if (typeof card.notes !== 'string') throw boardError('Card no longer exists.', 'missing-card')
+      if (op.type === 'update-card' && !based && card.external === true) {
+        throw boardError('This description is stored beside the board and the edit does not say which version it changes, so it was not saved.', 'notes-version-required')
+      }
       const next = op.type === 'complete-card'
         ? completeCardNotes(card.notes, { summary: op.summary, link: op.link ?? op.prUrl ?? '' })
         : String(op.patch.notes ?? '')
       if (next === card.notes) return false
-      const result = await writeSharedNotes(entry, op.cardId, next, card.notes_version, request)
+      let result
+      try {
+        result = await writeSharedNotes(entry, op.cardId, next, based ? op.notesVersion : card.notes_version, request)
+      } catch (error) {
+        // Retrying cannot shorten the text, so this refusal is final.
+        if (error?.code === 'notes-too-long') throw boardError(error.message, 'notes-too-long')
+        throw error
+      }
       if (result.status !== 'conflict') return true
+      if (based) throw boardError('Someone else changed this description first, so this edit was not saved.', 'notes-conflict')
     }
     throw boardError('The description kept changing while saving; try again.', 'notes-conflict')
   }

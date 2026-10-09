@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { configureSync } from '../sync.js'
+import { configureSync, pushSharedOp } from '../sync.js'
 import { createBoardRepository } from '../boardRepository.js'
 import { applyBoardOp } from '../operations.js'
 import {
@@ -115,7 +115,9 @@ function sharedFixture({ older = false } = {}) {
       activity.push(...JSON.parse(options.body).entries)
       return Response.json({ status: 'ok', activity })
     }
-    if (url.endsWith('/cards/c1')) return Response.json({ status: 'ok', notes, notes_version: notesVersion, activity })
+    if (url.endsWith('/cards/c1')) {
+      return Response.json({ status: 'ok', notes, notes_version: notesVersion, external: Number.isInteger(doc.cards.c1?.notesLength), activity })
+    }
     if (method === 'PUT') {
       const body = JSON.parse(options.body)
       if (body.expected_version !== version) return Response.json({ status: 'conflict', doc, version })
@@ -170,4 +172,57 @@ test('a host on an older Kanban still saves descriptions through the board', asy
   assert.equal(saved.status, 'saved')
   assert.equal(f.doc().cards.c1.notes, 'Edited inline')
   assert.equal(saved.activity.status, 'unsupported')
+})
+
+test('an edit made from a preview cannot replace a moved-out description', async () => {
+  const f = sharedFixture()
+  const before = f.notes()
+  await assert.rejects(
+    createBoardRepository(f).mutate('b', { type: 'update-card', cardId: 'c1', patch: { notes: 'Preview… plus a line' } }),
+    error => error.code === 'notes-version-required' && error.retryable === false && error.discardable === true,
+  )
+  assert.equal(f.notes(), before)
+  assert.ok(!f.calls.some(call => call.startsWith('PUT /cards/c1/notes')))
+})
+
+test('a queued description edit that names an older version goes to recovery, not over newer text', async () => {
+  const f = sharedFixture()
+  const before = f.notes()
+  await assert.rejects(
+    createBoardRepository(f).mutate('b', { type: 'update-card', cardId: 'c1', patch: { notes: 'Mine' }, notesVersion: 2 }),
+    error => error.code === 'notes-conflict' && error.discardable === true,
+  )
+  assert.equal(f.notes(), before)
+})
+
+test('a description edit that names the current version replaces the full text', async () => {
+  const f = sharedFixture()
+  await createBoardRepository(f).mutate('b', { type: 'update-card', cardId: 'c1', patch: { notes: 'Rewritten' }, notesVersion: 3 })
+  assert.equal(f.notes(), 'Rewritten')
+})
+
+test('completing a card whose title changed leaves its description untouched', async () => {
+  const f = sharedFixture()
+  f.doc().columns.push({ id: 'done', name: 'Done', cardIds: [] })
+  const before = f.notes()
+  await assert.rejects(
+    createBoardRepository(f).mutate('b', { type: 'complete-card', cardId: 'c1', expectedTitle: 'Old title', summary: 'Shipped', link: '' }),
+    error => error.code === 'card-title-changed',
+  )
+  assert.equal(f.notes(), before)
+  assert.ok(!f.calls.some(call => call.startsWith('PUT /cards/c1/notes')))
+})
+
+test('a writer adopts the host copy when the host moves a long description out', async () => {
+  const entry = { transport: 'kanban/1', host: 'peer.example', oid: 'obj', role: 'editor' }
+  const long = 'x'.repeat(500)
+  const settled = { v: 1, title: 'B', columns: [{ id: 'todo', name: 'To do', cardIds: ['c1'] }],
+    cards: { c1: card({ notes: `${'x'.repeat(399)}…`, notesLength: 500 }) } }
+  const request = async (url, options = {}) => (options.method === 'PUT'
+    ? Response.json({ status: 'ok', version: 2, doc: settled })
+    : Response.json({ doc: { ...settled, cards: { c1: card({ notes: '' }) } }, version: 1 }))
+  const landed = await pushSharedOp(entry, doc => { doc.cards.c1.notes = long; return doc }, null, request)
+  assert.equal(landed.version, 2)
+  assert.equal(landed.doc.cards.c1.notesLength, 500)
+  assert.equal(landed.doc.cards.c1.notes.length, 400)
 })

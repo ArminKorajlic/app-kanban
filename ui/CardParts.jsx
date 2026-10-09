@@ -6,7 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { createPortal } from 'react-dom'
 import { Calendar, Check, ChevronDown, DotsHorizontal, ExternalLink, Paperclip, Pencil, Plus, Reload, Trash } from '@openai/apps-sdk-ui/components/Icon'
 import { useModalFocus } from './modalFocus.js'
-import { describeActivity, MAX_NOTES_CHARS } from '../activity.js'
+import { describeActivity } from '../activity.js'
 import { describeAssignmentEvent, restorableAssignment } from '../assignment.js'
 import { isPreviewImage, loadCardAttachment, MAX_CARD_ATTACHMENTS } from '../attachments.js'
 import { checklistProgress, dueDateStatus, formatDueDate } from '../domain.js'
@@ -62,6 +62,7 @@ export function InlineCardText({
   placeholder,
   autoFocus = false,
   links = false,
+  onFocus,
   onCommit,
   onCancel,
 }) {
@@ -140,6 +141,7 @@ export function InlineCardText({
         dirtyRef.current = true
         event.currentTarget.dataset.empty = event.currentTarget.innerText ? 'false' : 'true'
       }}
+      onFocus={onFocus}
       onBlur={commitOnBlur}
       onKeyDown={cancelOnEscape}
       onClick={openLink}
@@ -388,11 +390,14 @@ export function DueChip({ due, canWrite, onChange }) {
 // `text` is the full description when known. While a shared card's moved-out
 // description is still loading, the board's preview is shown read-only: an
 // edit started from the preview would save a truncated text.
-export function DescriptionSection({ cardId, text, canWrite, editable, loading, conflict, error, onCommit, onKeepMine, onUseTheirs }) {
+// `maxLength` (shared boards only) refuses a longer text before it is sent;
+// the editor keeps the text and says why, so nothing vanishes unsaved.
+export function DescriptionSection({ cardId, text, canWrite, editable, loading, maxLength, conflict, error, onEditStart, onCommit, onKeepMine, onUseTheirs }) {
   const [expanded, setExpanded] = useState(false)
   const [overflows, setOverflows] = useState(false)
+  const [refusedLength, setRefusedLength] = useState(0)
   const bodyRef = useRef(null)
-  useEffect(() => { setExpanded(false) }, [cardId])
+  useEffect(() => { setExpanded(false); setRefusedLength(0) }, [cardId])
   useLayoutEffect(() => {
     const body = bodyRef.current?.querySelector('.kb-notes-display')
     if (!body) return undefined
@@ -404,7 +409,11 @@ export function DescriptionSection({ cardId, text, canWrite, editable, loading, 
   }, [text, expanded, editable])
   if (!canWrite && !text) return null
   const commit = value => {
-    if (value.length > MAX_NOTES_CHARS) return false
+    if (maxLength && value.length > maxLength) {
+      setRefusedLength(value.length)
+      return false
+    }
+    setRefusedLength(0)
     return onCommit(value) === false ? false : value
   }
   const clamp = expanded ? '' : ' is-clamped'
@@ -417,7 +426,9 @@ export function DescriptionSection({ cardId, text, canWrite, editable, loading, 
         placeholder="Add a description…"
         label="Card description"
         links
+        onFocus={onEditStart}
         onCommit={commit}
+        onCancel={() => setRefusedLength(0)}
       /> : <div className={`kb-notes-display${text ? '' : ' kb-notes-empty'}${clamp}`}>
         {text ? <LinkifiedText text={text} /> : 'Add a description…'}
       </div>}
@@ -430,6 +441,9 @@ export function DescriptionSection({ cardId, text, canWrite, editable, loading, 
         <button type="button" className="kb-btn kb-btn-primary" onClick={onKeepMine}>Keep mine</button>
       </div>
     </div>}
+    {refusedLength > 0 && <p className="kb-attachment-error" role="alert">
+      Not saved: this description has {refusedLength.toLocaleString()} characters. A shared board keeps at most {maxLength.toLocaleString()}. Make it shorter or move the long part into an attachment.
+    </p>}
     {error && <p className="kb-attachment-error" role="alert">{error}</p>}
   </CardSection>
 }

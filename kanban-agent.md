@@ -21,8 +21,12 @@ uses the current turn's credentials internally; never print them.
 2. `read BOARD_ID` returns the authoritative board, including its cards. On a
    shared board a long description stays beside the board: such a card has
    `notesLength` and only a preview in `notes`. `read-card BOARD_ID CARD_ID`
-   returns that card with its full description plus its activity (who changed
-   what, when). Edits made through this helper are recorded as the agent's.
+   returns that card with its full description, its `notesVersion`, and its
+   activity (who changed what, when). To change such a description, start
+   from the `read-card` text and send that `notesVersion` with `update-card`;
+   an edit without it, or after someone else changed the text, is refused so
+   a preview never replaces the full description. Edits made through this
+   helper are recorded as the agent's.
 3. Choose the intended board/column from those results, not guessed filenames.
    If several boards genuinely match, ask rather than silently picking the first.
 4. Send one operation as JSON on stdin. Generate arbitrary text with a JSON
@@ -33,7 +37,8 @@ uses the current turn's credentials internally; never print them.
 Commands and stdin shapes:
 
 - `add-card BOARD_ID`: `{"columnId":"...","title":"...","notes":"...","id":"optional-stable-id"}`
-- `update-card BOARD_ID`: `{"cardId":"...","patch":{"title":"...","notes":"..."}}`
+- `update-card BOARD_ID`: `{"cardId":"...","patch":{"title":"...","notes":"..."},"notesVersion":3}`
+  (`notesVersion` only when changing the notes of a card that has `notesLength`)
   Other editable fields: label, due, assignee, assigneeHost, and
   `pullRequestUrls` (the card's full list of linked GitHub pull request URLs;
   read the card first and send the whole list, since it replaces the old one).

@@ -433,10 +433,16 @@ class Service:
         """Keep the incoming document's descriptions consistent with the card records.
 
         Long descriptions move out of the document (this also migrates boards
-        written before card records existed). A write that changes the preview
-        of a moved-out description comes from an older Kanban that never saw
-        the full text; accepting it would truncate the description.
+        written before card records existed). Returns True when the incoming
+        document changed, so the writer adopts the host's copy instead of
+        keeping full text the board no longer carries.
+
+        A writer may still send the full text it held before the move; that is
+        the same description, not an edit. Any other change to a moved-out
+        preview comes from an older Kanban that never saw the full text, and
+        accepting it would truncate the description.
         """
+        changed_doc = False
         previous = row['doc'].get('cards',{})
         for card_id in set(previous) - set(doc['cards']):
             if isinstance(card_id,str): self.store.delete('card',row['id']+'/'+card_id)
@@ -446,10 +452,17 @@ class Service:
             notes = card.get('notes') if isinstance(card.get('notes'),str) else ''
             if isinstance(before.get('notesLength'),int):
                 if notes != before.get('notes'):
-                    fail(409,'notes-external',"This card's description is stored separately. Update Kanban to edit it.")
-                card['notesLength'] = before['notesLength']
+                    if notes != self.card_record(row,card_id)['notes']:
+                        # 'read-only' is the refusal an older Kanban already treats as
+                        # final: it reverts the edit or keeps it for recovery, instead
+                        # of retrying forever and holding back its later edits.
+                        fail(403,'read-only',"This card's description is stored separately. Update Kanban to edit it.")
+                    card['notes'] = before['notes']; changed_doc = True
+                if card.get('notesLength') != before['notesLength']:
+                    card['notesLength'] = before['notesLength']; changed_doc = True
                 continue
-            card.pop('notesLength',None)
+            if 'notesLength' in card:
+                card.pop('notesLength'); changed_doc = True
             changed = notes != (before.get('notes') if isinstance(before.get('notes'),str) else '')
             if not changed and len(notes) <= NOTES_PREVIEW_CHARS: continue
             record = self.card_record(row,card_id)
@@ -457,7 +470,9 @@ class Service:
             if len(notes) > NOTES_PREVIEW_CHARS:
                 record['notes'] = notes
                 card['notes'] = notes_preview(notes); card['notesLength'] = len(notes)
+                changed_doc = True
             self.store.put('card',row['id']+'/'+card_id,record)
+        return changed_doc
 
     def card_operation(self, row, op, body, actor):
         card_id = check(body.get('card_id'),CARD_ID,'card id')
@@ -467,8 +482,10 @@ class Service:
         external = isinstance(card,dict) and isinstance(card.get('notesLength'),int)
         current_notes = record['notes'] if external else (card.get('notes') if isinstance(card,dict) and isinstance(card.get('notes'),str) else '')
         if op == 'card-read':
+            # `external` tells a writer that the board only shows a preview, so an
+            # edit must name the version it started from (boardRepository.js).
             return {'status':'ok','notes':current_notes if isinstance(card,dict) else None,
-                'notes_version':record['notes_version'],'activity':record['activity']}
+                'notes_version':record['notes_version'],'external':external,'activity':record['activity']}
         if not isinstance(card,dict): fail(404,'card-missing','Card not found.')
         if op == 'activity-append':
             record['activity'] = merge_activity(record['activity'], activity_entries(body.get('entries'), actor))
@@ -509,11 +526,12 @@ class Service:
                 fail(400,'invalid-version','Expected version must be a positive integer.')
             if expected != row['version']:
                 return {'status':'conflict','version':row['version'],'doc':row['doc']}
-            self.settle_cards(row,doc)
+            settled = self.settle_cards(row,doc)
             document(doc)
             row['doc']=doc; row['version']+=1
             row['label']=str(doc.get('title') or row['label'])[:120]
-            return {'status':'ok','version':row['version']}
+            # Only a document the host changed is sent back; otherwise the writer's copy is exact.
+            return {'status':'ok','version':row['version'],**({'doc':doc} if settled else {})}
         aid = check(body.get('asset_id'),ASSET,'asset id')
         key = row['id']+'/'+aid
         if op == 'asset-read':
