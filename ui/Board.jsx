@@ -78,9 +78,11 @@ function Card({ boardId, share, card, labelNames, mine, changed, assigneeLabel, 
   const pullCount = cardPullUrls(card).length
   const labelled = card.label && card.label !== 'none' && LABELS[card.label]
   const hasDetails = Boolean(labelled || dueStatus || progress.total || pullCount || attachments.length || assignee)
+  // On a phone a person who is the card's only detail sits beside the title instead of on a row of their own.
+  const personOnly = Boolean(assignee) && !(labelled || dueStatus || progress.total || pullCount || attachments.length)
   return (
     <div
-      className={`kb-card${mine ? ' is-mine' : ''}${lifted ? ' kb-lifted' : ''}${canWrite ? '' : ' kb-readonly'}`}
+      className={`kb-card${mine ? ' is-mine' : ''}${personOnly ? ' is-person-only' : ''}${lifted ? ' kb-lifted' : ''}${canWrite ? '' : ' kb-readonly'}`}
       data-card-id={card.id}
       onPointerDown={canWrite ? e => { if (!e.target.closest('a')) onDragStart(e, card.id) } : undefined}
     >
@@ -193,7 +195,7 @@ function BoardPresence({ members, onOpen }) {
   </button>
 }
 
-function BoardSwitcher({ board, boardId, boards, shareMap, canWrite, open, onOpenChange, onRename, onSelect, onCreate }) {
+function BoardSwitcher({ board, boardId, boards, shareMap, canWrite, open, onOpenChange, onRename, onSelect, onCreate, onAllBoards }) {
   const panelRef = useModalFocus(open, () => onOpenChange(false))
 
   const cardCount = Object.keys(board.cards).length
@@ -234,6 +236,11 @@ function BoardSwitcher({ board, boardId, boards, shareMap, canWrite, open, onOpe
             onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
           />
           <div className="kb-switcher-rows">
+            {/* Phones have no grid button in the header, so all boards are reached from here. */}
+            <button className="kb-switcher-row kb-switcher-all" onClick={() => { onOpenChange(false); onAllBoards() }}>
+              <Grid />
+              <span className="kb-switcher-row-title">All boards</span>
+            </button>
             {boards.map(item => {
               const current = item.id === boardId
               const title = current ? board.title : item.title
@@ -422,6 +429,30 @@ const BOARD_VIEW_OPTIONS = [
   { id: 'changed', label: 'Changed' },
   { id: 'unassigned', label: 'Unassigned' },
 ]
+
+// Phones show one chip instead of the view switch and filter button: it names
+// the cards being shown and opens both in one sheet. A purple dot means cards
+// changed since you last looked.
+function ShowCardsChip({ view, counts, filtered, open, onOpen }) {
+  const label = BOARD_VIEW_OPTIONS.find(option => option.id === view)?.label || 'All'
+  const changedElsewhere = view !== 'changed' && counts.changed > 0
+  return (
+    <button
+      type="button"
+      className={`kb-show-chip${filtered ? ' is-filtered' : ''}${view === 'mine' || view === 'changed' ? ' is-you' : ''}`}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      aria-label={`Showing ${label.toLocaleLowerCase()} cards, ${counts[view]}${filtered ? ', filtered' : ''}${changedElsewhere ? `, ${counts.changed} changed since you last looked` : ''}. Change what is shown.`}
+      onClick={onOpen}
+    >
+      <span>{label}</span>
+      <span className="kb-show-count" aria-hidden="true">{counts[view]}</span>
+      {filtered && <Filter aria-hidden="true" />}
+      <ChevronDown aria-hidden="true" />
+      {changedElsewhere && <span className="kb-show-dot" aria-hidden="true" />}
+    </button>
+  )
+}
 
 function BoardViewSwitch({ view, counts, onChange }) {
   return (
@@ -675,6 +706,9 @@ export default memo(function Board({
   const [availability, setAvailability] = useState({ kind: 'loading', message: '' })
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [filtersOpen, setFiltersOpen] = useState(false)
+  // On a phone the view switch and the filters share one sheet behind the Show chip.
+  const [showOpen, setShowOpen] = useState(false)
+  const showSheetRef = useModalFocus(showOpen, () => setShowOpen(false))
   const [filterText, setFilterText] = useState('')
   const [filterLabels, setFilterLabels] = useState([])
   const [boardView, setBoardView] = useState('all')
@@ -2068,6 +2102,37 @@ export default memo(function Board({
   const createdLabel = openCard_?.createdAt && !Number.isNaN(Date.parse(openCard_.createdAt))
     ? `Created ${new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: new Date(openCard_.createdAt).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' }).format(new Date(openCard_.createdAt))}`
     : ''
+  const filterControls = <>
+    <input
+      className="kb-input kb-filter-input"
+      type="search"
+      placeholder="Filter title, notes, or person…"
+      aria-label="Filter cards by title, notes, or person"
+      value={filterText}
+      onChange={event => setFilterText(event.target.value)}
+    />
+    <div className="kb-filter-labels" aria-label="Filter by label">
+      {Object.entries(LABELS).map(([name, color]) => {
+        const active = filterLabels.includes(name)
+        return <button
+          key={name}
+          className={`kb-filter-label-btn${active ? ' kb-on' : ''}`}
+          aria-label={name === 'none' ? 'Filter unlabeled cards' : `Filter ${labelDisplayName(name, board.labelNames)} cards`}
+          aria-pressed={active}
+          onClick={() => setFilterLabels(labels =>
+            labels.includes(name) ? labels.filter(label => label !== name) : [...labels, name],
+          )}
+        >
+          <span
+            className={`kb-filter-dot${name === 'none' ? ' kb-none' : ''}`}
+            style={name === 'none' ? undefined : { background: color }}
+          />
+          <span>{name === 'none' ? 'Unlabeled' : labelDisplayName(name, board.labelNames)}</span>
+        </button>
+      })}
+    </div>
+    {hasFilters && <button className="kb-btn kb-btn-quiet kb-clear-filters" onClick={() => { setFilterText(''); setFilterLabels([]) }}>Clear filters</button>}
+  </>
   return (
     <>
       <div className="kb-header kb-board-header">
@@ -2085,6 +2150,7 @@ export default memo(function Board({
           onRename={renameBoard}
           onSelect={onSwitchBoard}
           onCreate={onCreateBoard}
+          onAllBoards={onAllBoards}
         />
         <div className="kb-header-spacer" />
         <span className="kb-status-live" role="status" aria-live="polite">
@@ -2095,19 +2161,33 @@ export default memo(function Board({
           {syncNote && <span className="kb-offline">{syncNote}</span>}
         </span>
         <BoardViewSwitch view={boardView} counts={viewCounts} onChange={chooseBoardView} />
+        <ShowCardsChip view={boardView} counts={viewCounts} filtered={hasFilters} open={showOpen} onOpen={() => setShowOpen(true)} />
         {share && <BoardPresence members={displayMembers} onOpen={() => setShareOpen(true)} />}
         <button
-          className={`kb-iconbtn${hasFilters ? ' kb-filter-active' : ''}`}
+          className={`kb-iconbtn kb-filter-toggle${hasFilters ? ' kb-filter-active' : ''}`}
           aria-label="Filter cards"
           aria-expanded={filtersOpen}
           onClick={() => setFiltersOpen(open => !open)}
         >
           <Filter />
         </button>
-        <button className="kb-iconbtn" aria-label="Share board" onClick={() => setShareOpen(true)}>
+        {/* When avatars show, they already open sharing; phones then drop this duplicate. */}
+        <button className="kb-iconbtn kb-share-btn" aria-label="Share board" onClick={() => setShareOpen(true)}>
           <Share />
         </button>
       </div>
+      {showOpen && <>
+        <div className="kb-scrim" onClick={() => setShowOpen(false)} />
+        <div ref={showSheetRef} tabIndex={-1} className="kb-sheet kb-show-sheet" role="dialog" aria-modal="true" aria-label="Show cards">
+          <div className="kb-sheet-grab" />
+          <div className="kb-sheet-row kb-sheet-row-between">
+            <h3>Show</h3>
+            <button className="kb-btn kb-btn-quiet" onClick={() => setShowOpen(false)}>Done</button>
+          </div>
+          <BoardViewSwitch view={boardView} counts={viewCounts} onChange={chooseBoardView} />
+          {filterControls}
+        </div>
+      </>}
       <div className="kb-divider" />
       {boardView === 'changed' && changedIds.size > 0 && <div className="kb-view-note" role="status">
         <span>{changedIds.size === 1 ? '1 card changed' : `${changedIds.size} cards changed`} since you last looked. Opening a card marks it as seen.</span>
@@ -2127,7 +2207,7 @@ export default memo(function Board({
       {recoveryButton && <div className="kb-recovery" role="status">
         <span>{recoveredCount > 0 ? 'A recovery copy is ready to download.' : 'Unsynced edits are kept on this instance.'}</span>{recoveryButton}
       </div>}
-      {board.columns.length > 1 && <div className="kb-list-bar">
+      {board.columns.length > 0 && <div className="kb-list-bar">
         <nav className="kb-list-nav" aria-label="Jump to list" ref={listNavRef}>
           {board.columns.map(column => <button
             key={column.id}
@@ -2150,38 +2230,11 @@ export default memo(function Board({
             <span className="kb-list-jump-count">{column.cardIds.length}</span>
           </button>)}
         </nav>
+        {access.canWrite && activeColumn && <button className="kb-iconbtn kb-list-bar-add" aria-label={`Add card to ${activeColumn.name}`} onClick={() => addCard(activeColumn.id)}><Plus /></button>}
         {access.canWrite && activeColumn && <div className="kb-list-bar-menu">{listMenu(activeColumn, activeColumnIndex)}</div>}
       </div>}
       {filtersOpen && <div className="kb-filterbar" aria-label="Card filters">
-        <input
-          className="kb-input kb-filter-input"
-          type="search"
-          placeholder="Filter title, notes, or person…"
-          aria-label="Filter cards by title, notes, or person"
-          value={filterText}
-          onChange={event => setFilterText(event.target.value)}
-        />
-        <div className="kb-filter-labels" aria-label="Filter by label">
-          {Object.entries(LABELS).map(([name, color]) => {
-            const active = filterLabels.includes(name)
-            return <button
-              key={name}
-              className={`kb-filter-label-btn${active ? ' kb-on' : ''}`}
-              aria-label={name === 'none' ? 'Filter unlabeled cards' : `Filter ${labelDisplayName(name, board.labelNames)} cards`}
-              aria-pressed={active}
-              onClick={() => setFilterLabels(labels =>
-                labels.includes(name) ? labels.filter(label => label !== name) : [...labels, name],
-              )}
-            >
-              <span
-                className={`kb-filter-dot${name === 'none' ? ' kb-none' : ''}`}
-                style={name === 'none' ? undefined : { background: color }}
-              />
-              <span>{name === 'none' ? 'Unlabeled' : labelDisplayName(name, board.labelNames)}</span>
-            </button>
-          })}
-        </div>
-        {hasFilters && <button className="kb-btn kb-btn-quiet kb-clear-filters" onClick={() => { setFilterText(''); setFilterLabels([]) }}>Clear filters</button>}
+        {filterControls}
       </div>}
       <div className={`kb-board${animateColumns ? ' kb-board-enter' : ''}${board.columns.length === 0 ? ' kb-board-empty' : ''}`} ref={boardScrollRef}>
         {board.columns.length === 0 && <div className="kb-empty-board-state">

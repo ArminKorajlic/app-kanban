@@ -184,6 +184,7 @@ export const CSS = `
     cursor: pointer;
   }
   .kb-switcher-row.kb-current { background: var(--surface-2); }
+  .kb-switcher-row.kb-switcher-all { display: none; color: var(--muted); }
   .kb-switcher-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .kb-switcher-row > svg { width: 18px; height: 18px; flex: 0 0 auto; color: var(--accent); }
   .kb-switcher-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -698,7 +699,6 @@ export const CSS = `
     .kb-divider { width: calc(100% - 32px); }
     .kb-filterbar { padding-inline: 16px; }
     .kb-board { gap: 12px; padding: 14px 16px 18px; scroll-padding-inline: 16px; }
-    .kb-col { width: min(336px, calc(100vw - 32px)); }
     .kb-board-skeleton-col { flex-basis: min(336px, calc(100vw - 32px)); width: min(336px, calc(100vw - 32px)); }
     .kb-board-skeleton-header-title { width: min(160px, 38vw); }
     .kb-card:hover { transform: none; box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 5%, transparent); }
@@ -1031,7 +1031,6 @@ export const CSS = `
   }
 
   @media (max-width: 640px) {
-    .kb-col { width: min(calc(100vw - 48px), 340px); }
     .kb-swatches { flex-wrap: nowrap; gap: 4px; overflow-x: auto; padding-block: 2px; }
     .kb-input, .kb-col-name { font-size: 16px; }
     .kb-sheet {
@@ -1066,7 +1065,6 @@ export const CSS = `
     .kb-assignee-search { min-height: 44px; }
     .kb-assignee-search > input { font-size: 16px; }
     .kb-assignee-option { min-height: 48px; }
-    .kb-board-header .kb-offline { display: none; }
     .kb-board-header .kb-header-spacer { display: none; }
     .kb-board-header .kb-switcher-wrap { flex: 1 1 0; }
     .kb-presence { padding-inline: 3px; }
@@ -1097,33 +1095,58 @@ export const CSS = `
   .kb-home-header { width: min(100%, 1100px); margin-inline: auto; }
   .kb-home-header + .kb-divider { max-width: 1068px; }
   .kb-count { font-variant-numeric: tabular-nums; }
+  /* Phones: one header row, then the list tabs, then one list filling the
+     screen. The tab of the list in view is that list's header and carries its
+     add and menu buttons, so a list has no header or Add card bar of its own. */
   @media (max-width: 640px) {
-    .kb-list-nav {
-      display: flex; gap: 6px; flex: 0 0 auto; overflow-x: auto;
-      padding: 8px 16px 0;
-    }
+    .kb-board-header { min-height: 48px; padding: 2px 6px 2px 10px; gap: 4px; flex-wrap: wrap; row-gap: 0; }
+    .kb-board-header .kb-homebtn,
+    .kb-board-header .kb-view-switch,
+    .kb-board-header .kb-filter-toggle,
+    .kb-board-header .kb-presence ~ .kb-share-btn { display: none; }
+    .kb-switcher-row.kb-switcher-all { display: flex; }
+    .kb-board-header .kb-show-chip { display: inline-flex; }
+    /* Sync messages take a slim line under the header, only while there is one. */
+    .kb-board-header .kb-status-live:not(:empty) { order: 20; flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 4px 6px; }
+    .kb-board-header ~ .kb-divider, .kb-filterbar { display: none; }
+    .kb-list-nav { display: flex; gap: 2px; flex: 0 0 auto; overflow-x: auto; }
     .kb-list-jump {
-      display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto;
-      min-height: 44px; padding: 0 12px; border: 1px solid var(--border);
-      border-radius: 10px; background: transparent; color: var(--text);
-      font: 550 13px/1.3 var(--font); cursor: pointer;
+      display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto;
+      min-height: 44px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent;
+      border-radius: 0; background: transparent; color: var(--muted);
+      font: 600 13.5px/1.3 var(--font); cursor: pointer;
     }
-    .kb-list-jump:active { background: var(--surface-2); }
-    /* The tab of the list in view is its header: highlighted, with the list menu beside the tabs. */
-    .kb-list-bar { display: flex; align-items: center; gap: 2px; padding-right: 8px; }
-    .kb-list-bar .kb-list-nav { flex: 1 1 auto; min-width: 0; padding: 8px 4px 0 16px; }
-    .kb-list-bar-menu { flex: 0 0 auto; padding-top: 8px; }
-    .kb-list-bar-menu .kb-menu-trigger { width: 44px; height: 44px; }
-    .kb-list-jump[aria-current="true"] { background: var(--surface-2); border-color: transparent; font-weight: 650; }
+    .kb-list-jump[aria-current="true"] { color: var(--text); border-bottom-color: var(--text); }
     .kb-list-jump[aria-current="true"] .kb-list-jump-count { color: var(--text); }
-    .kb-col:not(.is-renaming) > .kb-col-head { display: none; }
-    .kb-col > .kb-cards { padding-top: 10px; }
     .kb-list-jump-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .kb-list-jump-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .kb-list-bar { display: flex; align-items: center; padding-right: 2px; border-bottom: 1px solid var(--border); }
+    /* The fade at the edge says more tabs scroll into view. */
+    .kb-list-bar .kb-list-nav {
+      flex: 1 1 0; min-width: 0; padding-left: 6px;
+      -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+      mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+    }
+    /* The list menu's negative margin lines it up in a desktop list header; beside the tabs it would push the row off the screen. */
+    .kb-list-bar-menu { flex: none; }
+    .kb-list-bar-menu .kb-col-menu { margin: 0; }
+    .kb-list-bar-add, .kb-list-bar-menu .kb-menu-trigger { width: 40px; height: 44px; }
+    .kb-col:not(.is-renaming) > .kb-col-head { display: none; }
     .kb-col-head { flex-wrap: wrap; }
     .kb-col-name { flex-basis: calc(100% - 180px); }
-    .kb-board { gap: 12px; padding-top: 12px; }
+    .kb-addcard { display: none; }
+    /* Each list spans the screen; the tabs jump between them. */
+    .kb-board { gap: 16px; padding: 8px 16px 12px; scroll-padding-inline: 16px; }
+    .kb-col { width: calc(100vw - 32px); background: transparent; border-radius: 0; }
+    .kb-col.kb-col-folded { background: color-mix(in srgb, var(--surface-2) 32%, var(--bg)); border-radius: 14px; }
+    .kb-col > .kb-cards { padding: 0 0 8px; gap: 6px; }
+    .kb-card { gap: 6px; padding: 10px 12px 9px; }
     .kb-card-title { font-size: 15px; }
+    .kb-card-notes { margin-top: -2px; }
+    .kb-card-picture { height: 96px; }
+    /* A person who is the card's only detail sits beside the title. */
+    .kb-card.is-person-only .kb-card-meta { position: absolute; top: 9px; right: 10px; min-height: 0; }
+    .kb-card.is-person-only .kb-card-title { padding-right: 30px; }
     .kb-clear-filters { align-self: flex-start; }
   }
 
@@ -1244,11 +1267,21 @@ export const CSS = `
     background: color-mix(in srgb, var(--accent) 16%, transparent);
     color: var(--accent);
   }
-  @media (max-width: 640px) {
-    .kb-board-header { flex-wrap: wrap; row-gap: 8px; }
-    .kb-view-switch { order: 10; flex: 1 0 100%; overflow-x: auto; }
-    .kb-view-option { flex: 1 0 auto; min-height: 40px; }
-  }
+  /* Phones show this chip instead of the view switch and filter button; it
+     opens both in one sheet. */
+  .kb-show-chip { display: none; position: relative; align-items: center; gap: 6px; flex: 0 0 auto; height: 34px; padding: 0 9px 0 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text); font: 620 13.5px var(--font); cursor: pointer; }
+  .kb-show-chip::after { content: ""; position: absolute; inset: -5px 0; }
+  .kb-show-chip > svg { width: 14px; height: 14px; color: var(--muted); }
+  .kb-show-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .kb-show-chip.is-you .kb-show-count { color: var(--accent); }
+  .kb-show-chip.is-filtered { border-color: color-mix(in srgb, var(--text) 38%, var(--border)); }
+  .kb-show-dot { position: absolute; top: -2px; right: -1px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg); }
+  .kb-show-sheet { gap: 12px; }
+  .kb-show-sheet .kb-view-switch { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 0; background: transparent; }
+  .kb-show-sheet .kb-view-option { justify-content: space-between; min-height: 46px; padding: 0 12px; font-size: 15px; font-weight: 560; }
+  .kb-show-sheet .kb-view-option[aria-pressed="true"] { background: var(--surface-2); box-shadow: none; }
+  .kb-show-sheet .kb-filter-input { flex: 0 0 auto; }
+  .kb-show-sheet .kb-filter-labels { flex-wrap: wrap; overflow: visible; }
   .kb-view-note { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 16px; padding: 10px 20px 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
   .kb-view-note .kb-quiet-action { color: var(--accent); }
   @media (max-width: 640px) { .kb-view-note { padding-inline: 16px; } }
