@@ -5,8 +5,9 @@ A clean, mobile-first kanban board for Möbius.
 - Lists with counts, inline rename, safe delete confirmation, and a list menu
   to fold a list into a slim strip (remembered per person) or move it; on
   desktop a list can also be dragged by its header.
-- Same-size cards on the board: label, a two-line title, one line of notes,
-  and a details row (due date, checklist, attachments, assignee).
+- Cards on the board show the full title, the first two lines of the
+  description, the first picture or file, and a details row (label, due date,
+  checklist, pull requests, attachment count, assignee).
 - Drag and drop between lists (long-press on touch, drag on desktop), plus a
   status control at the top of the card sheet for accessibility.
 - A card sheet with assignee, label and due-date chips, short previews of long

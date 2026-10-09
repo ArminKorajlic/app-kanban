@@ -29,7 +29,7 @@ import {
 } from '../attachments.js'
 import { useModalFocus } from './modalFocus.js'
 import {
-  AttachmentImage, AttachmentsSection, CardActivity, cardTimeline, ChecklistSection, DescriptionSection, DueChip, dueTone,
+  AttachmentImage, AttachmentsSection, CardActivity, cardTimeline, CardTileAttachment, ChecklistSection, DescriptionSection, DueChip, dueTone,
   InlineCardText, LabelChip, LinkifiedText, MenuButton, PullRequestSection, SavedIndicator, StatusPill,
 } from './CardParts.jsx'
 import {
@@ -64,16 +64,19 @@ export const LABELS = {
   pink: 'var(--kb-label-pink, #ec4899)',
 }
 
-// Every card on the board has the same shape: a title of at most two lines
-// and one details row (label, due date, checklist, pull requests,
-// attachments, person). The description lives in the open card.
-function Card({ card, labelNames, mine, changed, assigneeLabel, assigneeMember, lifted, onOpen, onDragStart, canWrite }) {
+// A card on the board reads top to bottom like the open card: the full title,
+// the start of the description, one attachment, then a details row (label,
+// due date, checklist, pull requests, attachment count, person) when any of
+// those are set.
+function Card({ boardId, share, card, labelNames, mine, changed, assigneeLabel, assigneeMember, lifted, onOpen, onDragStart, canWrite }) {
   const dueStatus = dueDateStatus(card.due)
   const progress = checklistProgress(card.checklist)
   const assignee = (assigneeLabel ?? card.assignee)?.trim()
+  const notePreview = String(card.notes || '').trim()
   const attachments = card.attachments || []
   const pullCount = cardPullUrls(card).length
   const labelled = card.label && card.label !== 'none' && LABELS[card.label]
+  const hasDetails = Boolean(labelled || dueStatus || progress.total || pullCount || attachments.length || assignee)
   return (
     <div
       className={`kb-card${mine ? ' is-mine' : ''}${lifted ? ' kb-lifted' : ''}${canWrite ? '' : ' kb-readonly'}`}
@@ -85,7 +88,9 @@ function Card({ card, labelNames, mine, changed, assigneeLabel, assigneeMember, 
         {changed && <span className="kb-card-new" role="img" aria-label="Changed since you last looked" />}
         <LinkifiedText text={card.title} compactLinks />
       </div>
-      <div className="kb-card-meta">
+      {notePreview && <div className="kb-card-notes">{notePreview}</div>}
+      <CardTileAttachment boardId={boardId} share={share} attachments={attachments} />
+      {hasDetails && <div className="kb-card-meta">
         {labelled && <span className="kb-card-label" style={{ '--kb-lc': LABELS[card.label] }} title={labelDisplayName(card.label, labelNames)}
           aria-label={`Label: ${labelDisplayName(card.label, labelNames)}`}>{labelNames?.[card.label] || ''}</span>}
         {dueStatus && <span className={`kb-due kb-due-${dueStatus} kb-due-tone-${dueTone(card.due)}`}>{formatDueDate(card.due)}</span>}
@@ -100,7 +105,7 @@ function Card({ card, labelNames, mine, changed, assigneeLabel, assigneeMember, 
         </span>}
         <span className="kb-card-meta-spacer" />
         {assignee && <MemberAvatar member={assigneeMember || { name: assignee }} className="kb-avatar" presence={false} />}
-      </div>
+      </div>}
     </div>
   )
 }
@@ -2205,6 +2210,8 @@ export default function Board({
             }
             cardNodes.push(<Card
               key={card.id}
+              boardId={boardId}
+              share={share}
               card={card}
               labelNames={board.labelNames}
               mine={cardMatchesView(card, 'mine', me)}
@@ -2348,19 +2355,6 @@ export default function Board({
               onUseTheirs={() => resolveNotesConflict(false)}
             />
 
-            <ChecklistSection
-              checklist={Array.isArray(openCard_.checklist) ? openCard_.checklist : []}
-              canWrite={access.canWrite}
-              onAdd={text => addCheckItem(openCard_.id, text)}
-              onToggle={itemId => toggleCheckItem(openCard_.id, itemId)}
-              onDelete={itemId => removeCheckItem(openCard_.id, itemId)}
-              onEdit={(itemId, text) => editCheckItem(openCard_.id, itemId, text)}
-            />
-
-            <PullRequestSection card={openCard_} canWrite={access.canWrite} online={online} statuses={pullStatuses}
-              onUpdate={(previousUrl, nextUrl) => mutateCard({ type: 'edit-pull-request', cardId: openCard_.id, previousUrl, nextUrl })}
-              onRefresh={() => setPullStatusRefresh(value => value + 1)} />
-
             {access.canWrite && <input
               ref={fileInputRef}
               className="kb-visually-hidden"
@@ -2384,6 +2378,19 @@ export default function Board({
               onDownload={downloadAttachment}
               onRemove={attachment => removeAttachment(openCard_.id, attachment)}
             />
+
+            <ChecklistSection
+              checklist={Array.isArray(openCard_.checklist) ? openCard_.checklist : []}
+              canWrite={access.canWrite}
+              onAdd={text => addCheckItem(openCard_.id, text)}
+              onToggle={itemId => toggleCheckItem(openCard_.id, itemId)}
+              onDelete={itemId => removeCheckItem(openCard_.id, itemId)}
+              onEdit={(itemId, text) => editCheckItem(openCard_.id, itemId, text)}
+            />
+
+            <PullRequestSection card={openCard_} canWrite={access.canWrite} online={online} statuses={pullStatuses}
+              onUpdate={(previousUrl, nextUrl) => mutateCard({ type: 'edit-pull-request', cardId: openCard_.id, previousUrl, nextUrl })}
+              onRefresh={() => setPullStatusRefresh(value => value + 1)} />
 
             {!isDraftCard && <>
             <CardActivity

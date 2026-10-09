@@ -3,6 +3,11 @@ export const CSS = `
 .kb-recovery .kb-btn { min-height: 44px; }
 
   * { box-sizing: border-box; }
+  /* Like the Möbius shell, Kanban keeps scrollbars out of the interface:
+     wheel, trackpad, touch, and keyboard scrolling all still work. A styled
+     scrollbar would also make Chromium on Android draw a permanent track. */
+  * { scrollbar-width: none; }
+  *::-webkit-scrollbar { display: none; }
   ::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); color: var(--text); }
   /* Phone menus render in document.body, outside .kb-root, and need the same colours. */
   .kb-root, .kb-popover-menu.is-sheet {
@@ -203,8 +208,6 @@ export const CSS = `
     scroll-padding-inline: 16px;
     width: 100%;
     align-items: flex-start;
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
   }
   .kb-filterbar {
     flex: 0 0 auto;
@@ -300,14 +303,9 @@ export const CSS = `
     flex-direction: column;
     gap: 8px;
     min-height: 8px;
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
   }
-  .kb-board::-webkit-scrollbar, .kb-cards::-webkit-scrollbar { width: 7px; height: 7px; }
-  .kb-board::-webkit-scrollbar-thumb, .kb-cards::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
-  .kb-board::-webkit-scrollbar-track, .kb-cards::-webkit-scrollbar-track { background: transparent; }
-  /* Board cards: every card has the same shape, a title of at most two lines
-     and one details row, so a list reads as an even column. */
+  /* Board cards: the full title, two lines of description, one attachment,
+     then the details row. Each part is left out when the card has none. */
   .kb-card {
     position: relative;
     flex-shrink: 0;
@@ -335,7 +333,13 @@ export const CSS = `
   .kb-card-new { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: 1.5px; }
   .kb-card-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .kb-card.kb-readonly { cursor: pointer; }
-  .kb-card-title { min-height: calc(2 * 1.35em); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 14.5px; font-weight: 620; line-height: 1.35; letter-spacing: -0.012em; overflow-wrap: anywhere; pointer-events: none; }
+  .kb-card-title { font-size: 14.5px; font-weight: 620; line-height: 1.35; letter-spacing: -0.012em; overflow-wrap: anywhere; pointer-events: none; }
+  .kb-card-notes { margin-top: -4px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--muted); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; pointer-events: none; }
+  /* Screenshots are the usual picture, so the crop keeps their top. */
+  .kb-card-picture { display: block; width: 100%; height: 120px; object-fit: cover; object-position: top center; border: 1px solid color-mix(in srgb, var(--text) 8%, transparent); border-radius: 8px; background: var(--surface-2); pointer-events: none; }
+  .kb-card-file { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: var(--surface-2); color: var(--muted); font-size: 12.5px; pointer-events: none; }
+  .kb-card-file-badge { flex: 0 0 auto; padding: 2px 5px; border-radius: 4px; background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); font-size: 10px; font-weight: 750; letter-spacing: 0.02em; }
+  .kb-card-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .kb-card-title a { position: relative; z-index: 2; pointer-events: auto; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
   .kb-card-meta { min-width: 0; min-height: 22px; display: flex; align-items: center; gap: 9px; overflow: hidden; }
   .kb-card-count { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -558,12 +562,7 @@ export const CSS = `
     display: flex;
     flex-direction: column;
     gap: 16px;
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
   }
-  .kb-sheet::-webkit-scrollbar, .kb-home::-webkit-scrollbar { width: 7px; height: 7px; }
-  .kb-sheet::-webkit-scrollbar-thumb, .kb-home::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
-  .kb-sheet::-webkit-scrollbar-track, .kb-home::-webkit-scrollbar-track { background: transparent; }
   .kb-sheet-grab { width: 40px; height: 4px; border-radius: 2px; background: var(--border); margin: 0 auto; }
   .kb-sheet-row { display: flex; align-items: center; gap: 10px; }
   .kb-sheet-row-between { justify-content: space-between; }
@@ -637,19 +636,26 @@ export const CSS = `
   .kb-pr-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 560; }
   .kb-pr-ref { color: var(--muted); font-size: 12px; }
   .kb-pr-link:hover .kb-pr-name { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
-  .kb-pr-edit { flex: 0 0 auto; width: 36px; height: 36px; min-height: 36px; padding: 0; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
-  .kb-pr-edit:hover { color: var(--text); }
-  .kb-pr-edit > svg { width: 15px; height: 15px; }
-  .kb-pr-refresh { flex: 0 0 44px; width: 44px; height: 44px; min-height: 44px; padding: 0; }
-  .kb-pr-refresh > svg { width: 15px; height: 15px; }
+  /* Small icon buttons inside a card section (pull request refresh, add, and
+     edit) share one size and one right edge. On touch screens the hit area
+     still reaches 44px around the 32px button. */
+  .kb-section-head-actions { display: flex; align-items: center; gap: 2px; margin: -6px 0 -6px auto; }
+  .kb-iconbtn.kb-section-icon { position: relative; width: 32px; height: 32px; min-height: 32px; flex: 0 0 32px; padding: 0; border-radius: 8px; }
+  .kb-iconbtn.kb-section-icon > svg { width: 16px; height: 16px; }
+  @media (pointer: coarse) { .kb-iconbtn.kb-section-icon::after { content: ""; position: absolute; inset: -6px; } }
   /* With a mouse, the pencil appears on the line you point at; touch screens always show it. */
   @media (hover: hover) {
     .kb-pr-edit { opacity: 0; transition: opacity 0.15s ease; }
     .kb-pr-line:hover .kb-pr-edit, .kb-pr-edit:focus-visible { opacity: 1; }
   }
-  .kb-pr-editor { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
-  .kb-pr-editor .kb-input { min-width: 0; flex: 1 1 auto; font-size: 16px; }
-  .kb-pr-editor .kb-btn { min-height: 44px; padding-inline: 11px; }
+  /* The link field and its buttons are one height with one corner radius. */
+  .kb-pr-editor { display: flex; align-items: center; gap: 8px; }
+  .kb-pr-editor .kb-input { min-width: 0; flex: 1 1 auto; height: 40px; min-height: 40px; padding-block: 0; border-radius: 10px; font-size: 15px; }
+  .kb-pr-editor .kb-btn { height: 40px; min-height: 40px; padding: 0 14px; border-radius: 10px; }
+  @media (max-width: 640px) {
+    .kb-pr-editor .kb-input, .kb-pr-editor .kb-btn { height: 44px; min-height: 44px; }
+    .kb-pr-editor .kb-input { font-size: 16px; }
+  }
   .kb-pr-status { flex: 0 0 auto; padding: 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 650; }
   .kb-pr-status-open { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
   .kb-pr-status-draft { background: var(--surface-2); color: var(--muted); }
@@ -850,8 +856,7 @@ export const CSS = `
   }
   .kb-assignee-search > input::placeholder { color: var(--muted); opacity: 1; }
   .kb-assignee-search:focus-within { box-shadow: 0 0 0 2px var(--accent); }
-  .kb-assignee-options { min-height: 0; overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; gap: 2px; }
-  .kb-assignee-options::-webkit-scrollbar { display: none; }
+  .kb-assignee-options { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
   .kb-assignee-option {
     width: 100%;
     min-height: 44px;
@@ -895,8 +900,6 @@ export const CSS = `
   .kb-home {
     flex: 1;
     overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
     max-width: 1100px;
     width: 100%;
     margin: 0 auto;
@@ -1097,9 +1100,8 @@ export const CSS = `
   @media (max-width: 640px) {
     .kb-list-nav {
       display: flex; gap: 6px; flex: 0 0 auto; overflow-x: auto;
-      padding: 8px 16px 0; scrollbar-width: none;
+      padding: 8px 16px 0;
     }
-    .kb-list-nav::-webkit-scrollbar { display: none; }
     .kb-list-jump {
       display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto;
       min-height: 44px; padding: 0 12px; border: 1px solid var(--border);
@@ -1244,8 +1246,7 @@ export const CSS = `
   }
   @media (max-width: 640px) {
     .kb-board-header { flex-wrap: wrap; row-gap: 8px; }
-    .kb-view-switch { order: 10; flex: 1 0 100%; overflow-x: auto; scrollbar-width: none; }
-    .kb-view-switch::-webkit-scrollbar { display: none; }
+    .kb-view-switch { order: 10; flex: 1 0 100%; overflow-x: auto; }
     .kb-view-option { flex: 1 0 auto; min-height: 40px; }
   }
   .kb-view-note { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 16px; padding: 10px 20px 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
@@ -1343,9 +1344,7 @@ export const CSS = `
     background: var(--surface);
     color: var(--text);
     box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
-    scrollbar-width: none;
   }
-  .kb-popover-menu::-webkit-scrollbar { display: none; }
   .kb-popover-menu > button { min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: 550 14px/1.2 var(--font); text-align: left; cursor: pointer; }
   .kb-popover-menu > button:hover, .kb-popover-menu > button:focus-visible { background: var(--surface-2); outline: none; }
   .kb-popover-menu > button > svg { width: 15px; height: 15px; margin-left: auto; color: var(--accent); }
@@ -1433,14 +1432,12 @@ export const CSS = `
     .kb-check-item.is-editing .kb-check-delete { opacity: 1; }
   }
   .kb-folding { gap: 4px; }
-  .kb-card-attachments .kb-attachment-tiles { margin-top: 8px; }
   .kb-fold-toggle { width: calc(100% + 16px); min-height: 44px; margin: -6px -8px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 10px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
   .kb-fold-toggle:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
   .kb-fold-summary { min-width: 0; margin-left: auto; overflow: hidden; color: var(--muted); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
   .kb-fold-chevron { width: 15px; height: 15px; flex: 0 0 auto; color: var(--muted); transform: rotate(-90deg); transition: transform 0.2s ease; }
   .kb-fold-toggle[aria-expanded="true"] .kb-fold-chevron { transform: none; }
-  .kb-card-activity .kb-activity-list { max-height: 460px; margin-top: 8px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
-  .kb-card-activity .kb-activity-list::-webkit-scrollbar { display: none; }
+  .kb-card-activity .kb-activity-list { max-height: 460px; margin-top: 8px; overflow-y: auto; overscroll-behavior: contain; }
   .kb-activity-item.is-change .kb-activity-dot { background: var(--accent); }
   .kb-activity-item.is-assignment .kb-activity-dot { background: var(--kb-success); }
   .kb-activity-copy strong { font-weight: 650; }

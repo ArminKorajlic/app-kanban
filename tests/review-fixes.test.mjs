@@ -270,8 +270,8 @@ test('component-level viewer and keyboard contract gates writes, reorders, and m
   assert.equal(heading.match(/>New card</g).length, 1, 'New card is never the unconditional heading')
   assert.ok(inOrder(['<StatusPill', 'kb-card-close', '<CardTitleEditor', '<AssigneePicker', '<LabelChip', '<DueChip']),
     'the card header reads status then close; the details row reads assignee, label, then due date')
-  assert.ok(inOrder(['<DescriptionSection', '<ChecklistSection', '<PullRequestSection', '<AttachmentsSection', '<CardActivity', 'kb-card-danger-zone']),
-    'card sections read description, checklist, pull request, attachments, activity, then delete')
+  assert.ok(inOrder(['<DescriptionSection', '<AttachmentsSection', '<ChecklistSection', '<PullRequestSection', '<CardActivity', 'kb-card-danger-zone']),
+    'card sections read description, attachments, checklist, pull request, activity, then delete')
   assert.equal(sheetSource.match(/<AssigneePicker/g).length, 1, 'one assignee control for every screen size')
   assert.equal(sheetSource.match(/<DueChip/g).length, 1, 'one due-date control for every screen size')
   assert.equal(sheetSource.match(/<StatusPill/g).length, 1, 'one status control for every screen size')
@@ -301,8 +301,11 @@ test('component-level viewer and keyboard contract gates writes, reorders, and m
   assert.doesNotMatch(boardSource, /<select/)
   assert.match(boardSource, /<BoardPresence members=\{displayMembers\}/)
   assert.match(boardSource, /await onRefreshMembers\?\.\(\)/)
-  // Board cards show the title and one details row; the description lives in the open card.
-  assert.doesNotMatch(boardSource.slice(boardSource.indexOf('function Card('), boardSource.indexOf('function memberRecords(')), /card\.notes|kb-card-notes/)
+  // Board cards read like the open card: title, the start of the description, one attachment, then details.
+  const tile = boardSource.slice(boardSource.indexOf('function Card('), boardSource.indexOf('function memberRecords('))
+  assert.ok(['className="kb-card-title"', 'className="kb-card-notes"', '<CardTileAttachment', 'className="kb-card-meta"']
+    .every((marker, index, markers) => tile.indexOf(marker) > (index ? tile.indexOf(markers[index - 1]) : -1)),
+    'a board card reads title, description, attachment, then the details row')
   assert.match(partsSource, /Add attachment/)
   assert.match(boardSource, /onPaste=\{attachFromPaste\}/)
   assert.match(boardSource, /consumeAttachmentPaste/)

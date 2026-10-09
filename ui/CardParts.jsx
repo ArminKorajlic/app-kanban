@@ -657,24 +657,22 @@ export function PullRequestSection({ card, canWrite, online, statuses, onUpdate,
     <button type="button" className="kb-btn kb-btn-quiet" onClick={cancel}>Cancel</button>
   </form>
   const canRefresh = online && urls.some(parsePullRequestUrl)
-
-  // No pull request yet: one line, heading on the left and the add action on the right.
-  if (!urls.length) return <section className="kb-section kb-pr-section" aria-label="Pull request">
-    {editor === 'add' ? <>
-      <div className="kb-section-head"><h3>Pull request</h3></div>
-      {form('Add')}
-    </> : <div className="kb-section-line">
-      <h3>Pull request</h3>
-      <button type="button" className="kb-detail-chip is-empty" onClick={() => { setEditor('add'); setDraft('') }}><Plus aria-hidden="true" />Add pull request</button>
-    </div>}
-    {error && <p className="kb-attachment-error" role="alert">{error}</p>}
-  </section>
-
+  const adding = editor === 'add'
   const visible = expanded ? urls : urls.slice(0, PULL_REQUEST_PREVIEW_ITEMS)
   const hidden = urls.length - PULL_REQUEST_PREVIEW_ITEMS
   const title = urls.length > 1 ? 'Pull requests' : 'Pull request'
-  return <CardSection title={title} className="kb-pr-section"
-    meta={urls.length > 1 && <span className="kb-section-count">{urls.length}</span>}>
+  // Refresh and add sit on the heading's right edge, the same size as each
+  // line's pencil, so every button in the section shares one column.
+  const headingActions = (canRefresh || canWrite) && <span className="kb-section-head-actions">
+    {canRefresh && <button type="button" className="kb-iconbtn kb-section-icon" aria-label="Refresh pull request statuses" title="Refresh statuses" onClick={onRefresh}><Reload /></button>}
+    {canWrite && <button type="button" className="kb-iconbtn kb-section-icon" aria-label="Add pull request" title="Add pull request" aria-expanded={adding}
+      onClick={() => { if (adding) cancel(); else { setEditor('add'); setDraft(''); setError('') } }}><Plus /></button>}
+  </span>
+  return <CardSection title={title} className="kb-pr-section" meta={<>
+    {urls.length > 1 && <span className="kb-section-count">{urls.length}</span>}
+    {headingActions}
+  </>}>
+    {adding && form('Add')}
     {visible.map(url => {
       const status = statusFor(url)
       if (editor === url) return <div key={url}>
@@ -689,14 +687,11 @@ export function PullRequestSection({ card, canWrite, online, statuses, onUpdate,
           {status?.title && <span className="kb-pr-ref">{pullRequestReference(url)}</span>}
         </a>
         {status && <span className={`kb-pr-status kb-pr-status-${status.tone}`}>{status.label}</span>}
-        {canWrite && <button type="button" className="kb-iconbtn kb-pr-edit" aria-label={`Change or remove ${pullRequestTitle(url)}`} title="Change or remove" onClick={() => { setEditor(url); setDraft(url) }}><Pencil /></button>}
+        {canWrite && <button type="button" className="kb-iconbtn kb-section-icon kb-pr-edit" aria-label={`Change or remove ${pullRequestTitle(url)}`} title="Change or remove" onClick={() => { setEditor(url); setDraft(url) }}><Pencil /></button>}
       </div>
     })}
-    {editor === 'add' && form('Add')}
-    {editor === null && (hidden > 0 || canWrite || canRefresh) && <div className="kb-section-actions">
-      {hidden > 0 && <ShowMore expanded={expanded} onToggle={() => setExpanded(value => !value)} more={`Show ${hidden} more`} less="Show fewer" />}
-      {canWrite && <button type="button" className="kb-quiet-action" onClick={() => { setEditor('add'); setDraft('') }}><Plus aria-hidden="true" />Add pull request</button>}
-      {canRefresh && <button type="button" className="kb-iconbtn kb-pr-refresh" aria-label="Refresh pull request statuses" title="Refresh statuses" onClick={onRefresh}><Reload /></button>}
+    {hidden > 0 && <div className="kb-section-actions">
+      <ShowMore expanded={expanded} onToggle={() => setExpanded(value => !value)} more={`Show ${hidden} more`} less="Show fewer" />
     </div>}
     {hints.map(hint => <p className="kb-pr-hint" key={hint}>{hint}</p>)}
     {error && <p className="kb-attachment-error" role="alert">{error}</p>}
@@ -726,20 +721,32 @@ function fileBadge(attachment) {
   return extension && extension.length <= 5 && extension !== attachment.name ? extension.toLocaleUpperCase() : 'FILE'
 }
 
-// Attachments fold to one line like Activity, with the count on the right;
-// opening shows every file. A card without attachments shows the add action
-// on that line instead. Each card mounts its own section (keyed by card), so
-// a file added while it is folded opens it to show the new file.
+// A board card shows one attachment: its first picture, or, when it has only
+// files, the first file's name. The details row counts all of them.
+export function CardTileAttachment({ boardId, share, attachments }) {
+  const attachment = attachments.find(isPreviewImage) || attachments[0]
+  if (!attachment) return null
+  if (isPreviewImage(attachment)) return <AttachmentImage boardId={boardId} share={share} attachment={attachment} className="kb-card-picture" alt="" />
+  return <div className="kb-card-file">
+    <span className="kb-card-file-badge">{fileBadge(attachment)}</span>
+    <span className="kb-card-file-name">{attachment.name || 'Attachment'}</span>
+  </div>
+}
+
+export const ATTACHMENT_PREVIEW_ITEMS = 3
+
+// Attachments show their first row of files and "Show N more", like the
+// checklist. A card without attachments shows the add action on the heading
+// line instead. Each card mounts its own section (keyed by card), so a file
+// added past the first row expands the list to show it.
 export function AttachmentsSection({ boardId, share, attachments, canWrite, isDraft, busy, error, onPick, onPreview, onDownload, onRemove }) {
   const count = attachments.length
-  const [open, setOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const shownCount = useRef(count)
   useEffect(() => {
-    if (count > shownCount.current) setOpen(true)
+    if (count > shownCount.current && count > ATTACHMENT_PREVIEW_ITEMS) setExpanded(true)
     shownCount.current = count
   }, [count])
-  // An upload error is shown inside the section, so it opens to show it.
-  useEffect(() => { if (error) setOpen(true) }, [error])
   if (!count && !canWrite) return null
   const full = count >= MAX_CARD_ATTACHMENTS
   const addProps = {
@@ -756,10 +763,11 @@ export function AttachmentsSection({ boardId, share, attachments, canWrite, isDr
     </div>
     {errorLine}
   </section>
-  const summary = busy ? 'Adding files…' : count === 1 ? '1 attachment' : `${count} attachments`
-  return <FoldingSection title="Attachments" summary={summary} open={open} onToggle={() => setOpen(value => !value)} className="kb-card-attachments">
+  const visible = expanded ? attachments : attachments.slice(0, ATTACHMENT_PREVIEW_ITEMS)
+  const hidden = count - ATTACHMENT_PREVIEW_ITEMS
+  return <CardSection title="Attachments" meta={<span className="kb-section-count">{count}</span>}>
     <div className="kb-attachment-tiles">
-      {attachments.map(attachment => {
+      {visible.map(attachment => {
         const image = isPreviewImage(attachment)
         const name = attachment.name || (image ? 'Image' : 'Attachment')
         return <figure className="kb-attachment-tile" key={attachment.id}>
@@ -774,11 +782,12 @@ export function AttachmentsSection({ boardId, share, attachments, canWrite, isDr
         </figure>
       })}
     </div>
-    {canWrite && <div className="kb-section-actions">
-      <button className="kb-quiet-action" {...addProps}><Paperclip aria-hidden="true" />{busy ? 'Adding files…' : 'Add attachment'}</button>
+    {(hidden > 0 || canWrite) && <div className="kb-section-actions">
+      {hidden > 0 && <ShowMore expanded={expanded} onToggle={() => setExpanded(value => !value)} more={`Show ${hidden} more`} less="Show fewer" />}
+      {canWrite && <button className="kb-quiet-action" {...addProps}><Paperclip aria-hidden="true" />{busy ? 'Adding files…' : 'Add attachment'}</button>}
     </div>}
     {errorLine}
-  </FoldingSection>
+  </CardSection>
 }
 
 // ---- activity ----
