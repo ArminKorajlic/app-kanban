@@ -631,7 +631,7 @@ export const CSS = `
   .kb-notes-display a { position: relative; z-index: 2; pointer-events: auto; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
   .kb-notes-empty { color: var(--muted); }
   .kb-pr-line { min-height: 44px; display: flex; align-items: center; gap: 10px; }
-  .kb-pr-empty { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .kb-section-line { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .kb-pr-icon { width: 16px; height: 16px; flex: 0 0 auto; color: var(--muted); }
   .kb-pr-link { flex: 1 1 auto; min-width: 0; min-height: 44px; display: flex; flex-direction: column; justify-content: center; gap: 1px; color: var(--text); text-decoration: none; }
   .kb-pr-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 560; }
@@ -1134,7 +1134,7 @@ export const CSS = `
 
   @media (prefers-reduced-motion: reduce) {
     .kb-mini-spinner { animation: none; }
-    .kb-saved, .kb-show-more > svg, .kb-activity-chevron, .kb-section-progress > span { transition: none; }
+    .kb-saved, .kb-show-more > svg, .kb-fold-chevron, .kb-section-progress > span { transition: none; }
     .kb-board-enter .kb-col { animation: none; }
     .kb-loading-spinner { animation: none; }
     .kb-board-skeleton-icon,
@@ -1392,7 +1392,7 @@ export const CSS = `
   .kb-due-chip.is-soon { color: var(--kb-warning); border-color: color-mix(in srgb, var(--kb-warning) 45%, var(--border)); }
   .kb-section { min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 14px 0; border-top: 1px solid var(--border); }
   .kb-section-head { min-height: 20px; display: flex; align-items: center; gap: 8px; }
-  .kb-section-head h3, .kb-pr-empty h3, .kb-activity-toggle h3 { margin: 0; color: var(--muted); font-size: 14px; font-weight: 620; letter-spacing: -0.005em; }
+  .kb-section-head h3, .kb-section-line h3, .kb-fold-toggle h3 { margin: 0; color: var(--muted); font-size: 14px; font-weight: 620; letter-spacing: -0.005em; }
   .kb-section-count { color: var(--muted); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .kb-section-progress { flex: 0 1 120px; height: 5px; overflow: hidden; border-radius: 3px; background: var(--surface-2); }
   .kb-section-progress > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 0.25s ease; }
@@ -1432,12 +1432,13 @@ export const CSS = `
     .kb-check-item:not(.is-editing) .kb-check-delete { display: none; }
     .kb-check-item.is-editing .kb-check-delete { opacity: 1; }
   }
-  .kb-card-activity { gap: 4px; }
-  .kb-activity-toggle { width: calc(100% + 16px); min-height: 44px; margin: -6px -8px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 10px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
-  .kb-activity-toggle:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
-  .kb-activity-summary { min-width: 0; margin-left: auto; overflow: hidden; color: var(--muted); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
-  .kb-activity-chevron { width: 15px; height: 15px; flex: 0 0 auto; color: var(--muted); transform: rotate(-90deg); transition: transform 0.2s ease; }
-  .kb-activity-toggle[aria-expanded="true"] .kb-activity-chevron { transform: none; }
+  .kb-folding { gap: 4px; }
+  .kb-card-attachments .kb-attachment-tiles { margin-top: 8px; }
+  .kb-fold-toggle { width: calc(100% + 16px); min-height: 44px; margin: -6px -8px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 10px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+  .kb-fold-toggle:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+  .kb-fold-summary { min-width: 0; margin-left: auto; overflow: hidden; color: var(--muted); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+  .kb-fold-chevron { width: 15px; height: 15px; flex: 0 0 auto; color: var(--muted); transform: rotate(-90deg); transition: transform 0.2s ease; }
+  .kb-fold-toggle[aria-expanded="true"] .kb-fold-chevron { transform: none; }
   .kb-card-activity .kb-activity-list { max-height: 460px; margin-top: 8px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
   .kb-card-activity .kb-activity-list::-webkit-scrollbar { display: none; }
   .kb-activity-item.is-change .kb-activity-dot { background: var(--accent); }

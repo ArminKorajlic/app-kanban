@@ -318,3 +318,17 @@ test('an opened picture closes on a tap anywhere outside it, and Escape closes t
   assert.match(viewer, /ref=\{lightboxRef\}/)
   assert.match(viewer, /onClick=\{event => \{ if \(!event\.target\.closest\('\.kb-lightbox-image'\)\) setPreviewAttachment\(null\) \}\}/)
 })
+
+test('attachments fold to one line like Activity, with the count on the right, and open when a file is added', async () => {
+  const parts = await readFile(new URL('../ui/CardParts.jsx', import.meta.url), 'utf8')
+  const board = await readFile(new URL('../ui/Board.jsx', import.meta.url), 'utf8')
+  const section = parts.slice(parts.indexOf('export function AttachmentsSection('), parts.indexOf('// ---- activity ----'))
+  assert.match(section, /<FoldingSection title="Attachments" summary=\{summary\}/)
+  assert.match(section, /count === 1 \? '1 attachment' : `\$\{count\} attachments`/)
+  assert.match(section, /if \(count > shownCount\.current\) setOpen\(true\)/, 'a newly added file opens the section so it shows')
+  assert.match(section, /useEffect\(\(\) => \{ if \(error\) setOpen\(true\) \}, \[error\]\)/, 'an upload error is never hidden inside a folded section')
+  assert.match(section, /if \(!count\) return <section[^]*kb-section-line[^]*Add attachment/, 'with no files the line offers the add action instead')
+  assert.doesNotMatch(section, /slice\(0,/, 'opened, every file shows; there is no second preview limit')
+  assert.match(board, /<AttachmentsSection\s+key=\{openCard_\.id\}/, 'each card starts folded')
+  assert.match(parts, /return <FoldingSection title="Activity"/, 'Activity and Attachments share one folding section')
+})

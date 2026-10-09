@@ -2371,6 +2371,7 @@ export default function Board({
               onChange={attachFromInput}
             />}
             <AttachmentsSection
+              key={openCard_.id}
               boardId={boardId}
               share={share}
               attachments={openCard_.attachments || []}

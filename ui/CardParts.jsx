@@ -1,7 +1,7 @@
 // The open card's sections. Each section owns its own preview limit and
 // empty state, so a card opens at a predictable size however much it holds:
-// a few lines of description, the first checklist items, the first
-// attachments, and Activity folded away.
+// a few lines of description, the first checklist items, and Attachments and
+// Activity folded to one line each.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Calendar, Check, ChevronDown, ChevronLeft, DotsHorizontal, Paperclip, Pencil, Plus, PullRequestClosed, PullRequestDraft, PullRequestMerged, PullRequestOpen, Reload, Trash } from '@openai/apps-sdk-ui/components/Icon'
@@ -14,7 +14,6 @@ import { cardPullUrls } from '../operations.js'
 import { parsePullRequestUrl } from '../prMatching.js'
 
 export const CHECKLIST_PREVIEW_ITEMS = 3
-export const ATTACHMENT_PREVIEW_ITEMS = 3
 // The description preview height lives in theme.js (.kb-notes-display.is-clamped).
 
 // ---- text ----
@@ -193,6 +192,20 @@ export function CardSection({ title, meta, loading, className = '', children }) 
       {loading && <DelayedSpinner label={`Loading ${title.toLocaleLowerCase()}`} />}
     </div>
     {children}
+  </section>
+}
+
+// A section folded to one line: its title, an optional count or spinner, a
+// summary on the right, and a chevron. Opening it shows the children.
+export function FoldingSection({ title, meta, summary, open, onToggle, className = '', children }) {
+  return <section className={`kb-section kb-folding${className ? ` ${className}` : ''}`} aria-label={title}>
+    <button type="button" className="kb-fold-toggle" aria-expanded={open} onClick={onToggle}>
+      <h3>{title}</h3>
+      {meta}
+      <span className="kb-fold-summary">{open ? '' : summary}</span>
+      <ChevronDown aria-hidden="true" className="kb-fold-chevron" />
+    </button>
+    {open && children}
   </section>
 }
 
@@ -650,7 +663,7 @@ export function PullRequestSection({ card, canWrite, online, statuses, onUpdate,
     {editor === 'add' ? <>
       <div className="kb-section-head"><h3>Pull request</h3></div>
       {form('Add')}
-    </> : <div className="kb-pr-empty">
+    </> : <div className="kb-section-line">
       <h3>Pull request</h3>
       <button type="button" className="kb-detail-chip is-empty" onClick={() => { setEditor('add'); setDraft('') }}><Plus aria-hidden="true" />Add pull request</button>
     </div>}
@@ -713,15 +726,40 @@ function fileBadge(attachment) {
   return extension && extension.length <= 5 && extension !== attachment.name ? extension.toLocaleUpperCase() : 'FILE'
 }
 
+// Attachments fold to one line like Activity, with the count on the right;
+// opening shows every file. A card without attachments shows the add action
+// on that line instead. Each card mounts its own section (keyed by card), so
+// a file added while it is folded opens it to show the new file.
 export function AttachmentsSection({ boardId, share, attachments, canWrite, isDraft, busy, error, onPick, onPreview, onDownload, onRemove }) {
-  const [expanded, setExpanded] = useState(false)
-  if (!attachments.length && !canWrite) return null
-  const visible = expanded ? attachments : attachments.slice(0, ATTACHMENT_PREVIEW_ITEMS)
-  const hidden = attachments.length - ATTACHMENT_PREVIEW_ITEMS
-  const full = attachments.length >= MAX_CARD_ATTACHMENTS
-  return <CardSection title="Attachments" meta={attachments.length > 0 && <span className="kb-section-count">{attachments.length}</span>}>
-    {visible.length > 0 && <div className="kb-attachment-tiles">
-      {visible.map(attachment => {
+  const count = attachments.length
+  const [open, setOpen] = useState(false)
+  const shownCount = useRef(count)
+  useEffect(() => {
+    if (count > shownCount.current) setOpen(true)
+    shownCount.current = count
+  }, [count])
+  // An upload error is shown inside the section, so it opens to show it.
+  useEffect(() => { if (error) setOpen(true) }, [error])
+  if (!count && !canWrite) return null
+  const full = count >= MAX_CARD_ATTACHMENTS
+  const addProps = {
+    type: 'button',
+    disabled: isDraft || busy || full,
+    onClick: onPick,
+    title: isDraft ? 'Add a title to attach files' : full ? `Limit of ${MAX_CARD_ATTACHMENTS} reached` : 'Images or files. You can also drop or paste them onto the card.',
+  }
+  const errorLine = error && <p className="kb-attachment-error" role="alert">{error}</p>
+  if (!count) return <section className="kb-section" aria-label="Attachments">
+    <div className="kb-section-line">
+      <h3>Attachments</h3>
+      <button className="kb-detail-chip is-empty" {...addProps}><Plus aria-hidden="true" />{busy ? 'Adding files…' : 'Add attachment'}</button>
+    </div>
+    {errorLine}
+  </section>
+  const summary = busy ? 'Adding files…' : count === 1 ? '1 attachment' : `${count} attachments`
+  return <FoldingSection title="Attachments" summary={summary} open={open} onToggle={() => setOpen(value => !value)} className="kb-card-attachments">
+    <div className="kb-attachment-tiles">
+      {attachments.map(attachment => {
         const image = isPreviewImage(attachment)
         const name = attachment.name || (image ? 'Image' : 'Attachment')
         return <figure className="kb-attachment-tile" key={attachment.id}>
@@ -735,16 +773,12 @@ export function AttachmentsSection({ boardId, share, attachments, canWrite, isDr
           {canWrite && <button type="button" className="kb-iconbtn kb-attachment-remove" aria-label={`Remove ${name}`} onClick={() => onRemove(attachment)}><Trash /></button>}
         </figure>
       })}
-    </div>}
-    <div className="kb-section-actions">
-      {hidden > 0 && <ShowMore expanded={expanded} onToggle={() => setExpanded(value => !value)} more={`Show all ${attachments.length} attachments`} less="Show fewer" />}
-      {canWrite && <button type="button" className="kb-quiet-action" disabled={isDraft || busy || full} onClick={onPick}
-        title={isDraft ? 'Add a title to attach files' : full ? `Limit of ${MAX_CARD_ATTACHMENTS} reached` : 'Images or files. You can also drop or paste them onto the card.'}>
-        <Paperclip aria-hidden="true" />{busy ? 'Adding files…' : 'Add attachment'}
-      </button>}
     </div>
-    {error && <p className="kb-attachment-error" role="alert">{error}</p>}
-  </CardSection>
+    {canWrite && <div className="kb-section-actions">
+      <button className="kb-quiet-action" {...addProps}><Paperclip aria-hidden="true" />{busy ? 'Adding files…' : 'Add attachment'}</button>
+    </div>}
+    {errorLine}
+  </FoldingSection>
 }
 
 // ---- activity ----
@@ -793,36 +827,31 @@ export function CardActivity({ card, timeline, status, canWrite, nameFor, onRest
   const summary = latest
     ? `Last change ${lowerFirst(formatActivityTime(latest.at))}${latest.actor ? ` by ${latest.actor}` : ''}`
     : loading ? '' : 'No changes yet'
-  return <section className="kb-section kb-card-activity" aria-label="Activity">
-    <button type="button" className="kb-activity-toggle" aria-expanded={open} onClick={() => setOpen(value => !value)}>
-      <h3>Activity</h3>
-      {timeline.length > 0 && <span className="kb-section-count">{timeline.length}</span>}
-      {loading && <DelayedSpinner label="Loading activity" />}
-      <span className="kb-activity-summary">{open ? '' : summary}</span>
-      <ChevronDown aria-hidden="true" className="kb-activity-chevron" />
-    </button>
-    {open && <>
-      {status === 'unsupported' && <p className="kb-activity-note">Full activity appears once this board’s host updates Kanban. Assignment changes are shown below.</p>}
-      {status === 'error' && <p className="kb-activity-note">Activity couldn’t be loaded right now.</p>}
-      {timeline.length > 0 && <ol className="kb-activity-list" tabIndex={0} aria-label="Card activity, newest first">
-        {timeline.map(item => <li key={item.key} className={`kb-activity-item is-${item.kind}`}>
-          <span className="kb-activity-dot" aria-hidden="true" />
-          <div className="kb-activity-copy">
-            {item.event
-              ? <span>{describeAssignmentEvent(item.event, nameFor)}</span>
-              : <span><strong>{item.actor}</strong> {item.text}</span>}
-            <small>
-              <time dateTime={item.at}>{formatActivityTime(item.at)}</time>
-              {item.kind === 'observed' && <> · changed outside Kanban</>}
-            </small>
-          </div>
-          {item.event && item.event === restoreEvent && restore && (
-            <button type="button" className="kb-btn kb-btn-quiet kb-activity-restore" onClick={() => onRestore(restore)}>
-              {nameFor(restore) === 'you' ? 'Put me back' : `Restore ${nameFor(restore)}`}
-            </button>
-          )}
-        </li>)}
-      </ol>}
-    </>}
-  </section>
+  const meta = <>
+    {timeline.length > 0 && <span className="kb-section-count">{timeline.length}</span>}
+    {loading && <DelayedSpinner label="Loading activity" />}
+  </>
+  return <FoldingSection title="Activity" meta={meta} summary={summary} open={open} onToggle={() => setOpen(value => !value)} className="kb-card-activity">
+    {status === 'unsupported' && <p className="kb-activity-note">Full activity appears once this board’s host updates Kanban. Assignment changes are shown below.</p>}
+    {status === 'error' && <p className="kb-activity-note">Activity couldn’t be loaded right now.</p>}
+    {timeline.length > 0 && <ol className="kb-activity-list" tabIndex={0} aria-label="Card activity, newest first">
+      {timeline.map(item => <li key={item.key} className={`kb-activity-item is-${item.kind}`}>
+        <span className="kb-activity-dot" aria-hidden="true" />
+        <div className="kb-activity-copy">
+          {item.event
+            ? <span>{describeAssignmentEvent(item.event, nameFor)}</span>
+            : <span><strong>{item.actor}</strong> {item.text}</span>}
+          <small>
+            <time dateTime={item.at}>{formatActivityTime(item.at)}</time>
+            {item.kind === 'observed' && <> · changed outside Kanban</>}
+          </small>
+        </div>
+        {item.event && item.event === restoreEvent && restore && (
+          <button type="button" className="kb-btn kb-btn-quiet kb-activity-restore" onClick={() => onRestore(restore)}>
+            {nameFor(restore) === 'you' ? 'Put me back' : `Restore ${nameFor(restore)}`}
+          </button>
+        )}
+      </li>)}
+    </ol>}
+  </FoldingSection>
 }
