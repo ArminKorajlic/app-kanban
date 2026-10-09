@@ -156,3 +156,12 @@ test('a shared board also warns when its attachment space is nearly used up', as
   assert.equal(boardCapacity({ cards: cards(95) }).filesNearlyFull, true)
   assert.equal(boardCapacity({ cards: { a: { attachments: [{ id: 'big', size: 96 * 1024 * 1024 }] } } }).filesNearlyFull, true)
 })
+
+test('a list can be recoloured to a known colour or back to none, nothing else', async () => {
+  const { applyBoardOp } = await import('../operations.js')
+  const board = () => ({ columns: [{ id: 'todo', name: 'To do', color: 'blue', cardIds: [] }], cards: {} })
+  assert.equal(applyBoardOp(board(), { type: 'recolor-column', columnId: 'todo', color: 'pink' }).columns[0].color, 'pink')
+  assert.equal(applyBoardOp(board(), { type: 'recolor-column', columnId: 'todo', color: null }).columns[0].color, null)
+  assert.equal(applyBoardOp(board(), { type: 'recolor-column', columnId: 'todo', color: 'chartreuse' }).columns[0].color, 'blue')
+  assert.equal(applyBoardOp(board(), { type: 'recolor-column', columnId: 'missing', color: 'red' }).columns[0].color, 'blue')
+})

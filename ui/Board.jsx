@@ -37,6 +37,7 @@ import {
   cardAssigneeLabel,
   boardAccess,
   boardCapacity,
+  COLUMN_COLOR_KEYS,
   cardMatchesFilters,
   checklistProgress,
   defaultColumnColor,
@@ -44,6 +45,9 @@ import {
   formatDueDate,
   visibleToFullIndex,
 } from '../domain.js'
+
+// A list's colour: none (grey) or one of the label colours.
+const LIST_COLOURS = [[null, 'No colour'], ...COLUMN_COLOR_KEYS.map(key => [key, key.charAt(0).toUpperCase() + key.slice(1)])]
 
 export const LABELS = {
   none: 'transparent',
@@ -1585,6 +1589,10 @@ export default function Board({
     })
   }
 
+  const recolorColumn = (colId, color) => {
+    mutate({ type: 'recolor-column', columnId: colId, color })
+  }
+
   const renameColumn = (colId, name) => {
     mutate({ type: 'rename-column', columnId: colId, name })
   }
@@ -2083,8 +2091,21 @@ export default function Board({
                   onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
                 />
                 <span className="kb-count">{narrowed ? `${cards.length}/${allCards.length}` : allCards.length}</span>
-                {access.canWrite && <MenuButton label={`List options for ${col.name}`} className="kb-col-menu">
+                {access.canWrite && <MenuButton label={`List options for ${col.name}`} className="kb-col-menu">{({ page, setPage }) => page === 'colour' ? <>
+                  <button type="button" className="kb-menu-back" data-keep-open onClick={() => setPage('main')}><ChevronLeft aria-hidden="true" />Back</button>
+                  <div className="kb-menu-heading">List colour</div>
+                  {LIST_COLOURS.map(([key, name]) => <button key={name} type="button" role="menuitemradio" aria-checked={(col.color || null) === key}
+                    onClick={() => recolorColumn(col.id, key)}>
+                    <span className="kb-chip-swatch" style={{ background: columnColor({ color: key }) }} aria-hidden="true" />
+                    <span className="kb-menu-label">{name}</span>
+                    {(col.color || null) === key && <Check aria-hidden="true" />}
+                  </button>)}
+                </> : <>
                   <button type="button" role="menuitem" onClick={() => requestAnimationFrame(() => boardScrollRef.current?.querySelector(`[data-col-id="${CSS.escape(col.id)}"] .kb-col-name`)?.select())}>Rename list</button>
+                  <button type="button" role="menuitem" data-keep-open aria-haspopup="menu" onClick={() => setPage('colour')}>
+                    <span className="kb-menu-label">Change colour</span>
+                    <span className="kb-chip-swatch" style={{ background: columnColor(col) }} aria-hidden="true" />
+                  </button>
                   <button type="button" role="menuitem" onClick={() => setListFolded(col.id, true)}>Fold list</button>
                   <div className="kb-menu-separator" />
                   <button type="button" role="menuitem" disabled={columnIndex === 0} onClick={() => reorderColumn(col.id, -1)}>Move left</button>
@@ -2094,7 +2115,7 @@ export default function Board({
                     aria-label={`Delete list ${col.name}`}
                     onClick={() => setConfirmDeleteCol(col.id)}
                   >Delete list…</button>
-                </MenuButton>}
+                </>}</MenuButton>}
               </div>
               {access.canWrite && confirmDeleteCol === col.id && (
                 <div ref={columnConfirmRef} tabIndex={-1} className="kb-col-confirm" role="alertdialog" aria-modal="true" aria-label={`Delete list ${col.name}`}>

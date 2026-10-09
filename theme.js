@@ -4,7 +4,8 @@ export const CSS = `
 
   * { box-sizing: border-box; }
   ::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); color: var(--text); }
-  .kb-root {
+  /* Phone menus render in document.body, outside .kb-root, and need the same colours. */
+  .kb-root, .kb-popover-menu.is-sheet {
     --kb-danger: color-mix(in srgb, #ef4444 55%, var(--text));
     --kb-warning: color-mix(in srgb, #f59e0b 52%, var(--text));
     --kb-success: color-mix(in srgb, #10b981 55%, var(--text));
@@ -14,6 +15,8 @@ export const CSS = `
     --kb-label-blue: color-mix(in srgb, #3b82f6 55%, var(--text));
     --kb-label-purple: color-mix(in srgb, #8b5cf6 55%, var(--text));
     --kb-label-pink: color-mix(in srgb, #ec4899 55%, var(--text));
+  }
+  .kb-root {
     min-height: 100%;
     height: 100%;
     display: flex;
@@ -1447,6 +1450,8 @@ export const CSS = `
   .kb-menu-button { position: relative; }
   .kb-popover-menu.kb-menu-end:not(.is-sheet) { left: auto; right: 0; min-width: 190px; }
   .kb-popover-menu > button:disabled { opacity: 0.4; cursor: default; background: transparent; }
+  .kb-popover-menu > .kb-menu-back { min-height: 40px; gap: 4px; color: var(--muted); font-weight: 600; }
+  .kb-popover-menu > .kb-menu-back > svg { margin-left: 0; color: inherit; }
   .kb-col { transition: box-shadow 0.15s ease; }
   .kb-col-dragging { position: relative; z-index: 6; cursor: grabbing; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 0 0 2px var(--accent); transition: none; }
   .kb-col-drop-before { box-shadow: -8px 0 0 -5px var(--accent); }

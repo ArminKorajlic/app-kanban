@@ -221,18 +221,24 @@ function usePopover() {
   return { rootRef, menuRef, open, setOpen, toggle, layer, menuClass }
 }
 
-// A ••• trigger whose menu closes after any item is chosen. `children` are the
-// menu items (buttons with role="menuitem").
+// A ••• trigger whose menu closes after an item is chosen. `children` renders
+// the items for the current page (`main` when it opens); an item that only
+// switches page carries `data-keep-open`.
 export function MenuButton({ label, className = '', children }) {
   const { rootRef, menuRef, open, setOpen, toggle, layer, menuClass } = usePopover()
+  const [page, setPage] = useState('main')
+  useEffect(() => { if (open) setPage('main') }, [open])
+  useEffect(() => {
+    if (open) menuRef.current?.querySelector('button:not(:disabled)')?.focus()
+  }, [page])
   return <div className={`kb-menu-button${className ? ` ${className}` : ''}`} ref={rootRef}>
     <button type="button" className="kb-iconbtn kb-menu-trigger" aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open}
       onPointerDown={event => event.stopPropagation()} onClick={toggle}>
       <DotsHorizontal aria-hidden="true" />
     </button>
     {open && layer(<div ref={menuRef} className={`${menuClass} kb-menu-end`} role="menu" aria-label={label}
-      onClick={event => { if (event.target.closest('button:not(:disabled)')) setOpen(false) }}>
-      {children}
+      onClick={event => { if (event.target.closest('button:not(:disabled):not([data-keep-open])')) setOpen(false) }}>
+      {children({ page, setPage })}
     </div>)}
   </div>
 }

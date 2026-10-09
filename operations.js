@@ -3,6 +3,7 @@
 // base instead of trusting the runtime's blind offline write queue.
 import { parsePullRequestUrl } from './prMatching.js'
 import { applyAssignment } from './assignment.js'
+import { COLUMN_COLOR_KEYS } from './domain.js'
 
 function insertBefore(ids, itemId, beforeId) {
   const next = (Array.isArray(ids) ? ids : []).filter(id => id !== itemId)
@@ -151,6 +152,12 @@ export function applyBoardOp(board, op) {
       if (op.column?.id && !board.columns.some(column => column.id === op.column.id)) {
         board.columns.push(structuredClone(op.column))
       }
+      return board
+    }
+    case 'recolor-column': {
+      // `null` is the uncoloured (grey) list; anything else must be a known key.
+      const column = board.columns.find(item => item.id === op.columnId)
+      if (column && (op.color === null || COLUMN_COLOR_KEYS.includes(op.color))) column.color = op.color
       return board
     }
     case 'rename-column': {
