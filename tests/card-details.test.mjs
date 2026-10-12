@@ -368,3 +368,22 @@ test('Kanban hides scrollbars like the Möbius shell and never styles a scrollba
   assert.equal(theme.match(/scrollbar-width/g).length, 1, 'one rule for the whole app')
   assert.doesNotMatch(theme, /scrollbar-color|scrollbar-thumb|scrollbar-track/, 'a styled bar turns into a permanent track on Android')
 })
+
+test('closing a menu by tapping its backdrop never taps what lies beneath it', async () => {
+  const parts = await readFile(new URL('../ui/CardParts.jsx', import.meta.url), 'utf8')
+  const board = await readFile(new URL('../ui/Board.jsx', import.meta.url), 'utf8')
+  const source = parts.slice(parts.indexOf('export function pressedOutside('), parts.indexOf('function usePopover('))
+  const pressedOutside = Function(`${source.replace('export ', '')}; return pressedOutside`)()
+  const root = { current: { contains: target => target.where === 'trigger' } }
+  const menu = { current: { contains: target => target.where === 'menu' } }
+  const press = where => ({ target: { where, closest: selector => (where === 'backdrop' && selector === '[data-layer-backdrop]' ? {} : null) } })
+  assert.equal(pressedOutside(press('backdrop'), root, menu), false, 'the backdrop closes on its own click, which ends the tap on the backdrop')
+  assert.equal(pressedOutside(press('menu'), root, menu), false)
+  assert.equal(pressedOutside(press('trigger'), root, menu), false)
+  assert.equal(pressedOutside(press('board'), root, menu), true, 'a press elsewhere (no backdrop on desktop) still closes the menu')
+  // Both layered menus with a backdrop opt in, and both close from the backdrop's click.
+  assert.match(parts, /className="kb-popover-backdrop" data-layer-backdrop aria-hidden="true" onClick=\{\(\) => setOpen\(false\)\}/)
+  assert.match(board, /className="kb-assignee-backdrop" data-layer-backdrop aria-hidden="true" onClick=\{\(\) => setOpen\(false\)\}/)
+  assert.equal(parts.match(/pressedOutside\(event, rootRef, menuRef\)/g).length, 1)
+  assert.equal(board.match(/pressedOutside\(event, rootRef, menuRef\)/g).length, 1)
+})

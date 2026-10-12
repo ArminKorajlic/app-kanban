@@ -31,7 +31,7 @@ import { useModalFocus } from './modalFocus.js'
 import { appVisible, onAppVisibilityChange } from '../visibility.js'
 import {
   AttachmentImage, AttachmentsSection, CardActivity, cardTimeline, CardTileAttachment, ChecklistSection, DescriptionSection, DueChip, dueTone,
-  InlineCardText, LabelChip, LinkifiedText, MenuButton, PullRequestSection, SavedIndicator, StatusPill,
+  InlineCardText, LabelChip, LinkifiedText, MenuButton, pressedOutside, PullRequestSection, SavedIndicator, StatusPill,
 } from './CardParts.jsx'
 import {
   assigneeAvatar,
@@ -298,7 +298,7 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, chip = false
   useEffect(() => {
     if (!open) return undefined
     const closeOnOutsidePress = event => {
-      if (!rootRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false)
+      if (pressedOutside(event, rootRef, menuRef)) setOpen(false)
     }
     const prevWidth = window.innerWidth
     const closeOnResize = () => { if (window.innerWidth !== prevWidth) setOpen(false) }
@@ -369,7 +369,7 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, chip = false
         {canWrite && <ChevronDown aria-hidden="true" />}
       </button>}
       {open && createPortal(<>
-        <div className="kb-assignee-backdrop" aria-hidden="true" onClick={() => setOpen(false)} />
+        <div className="kb-assignee-backdrop" data-layer-backdrop aria-hidden="true" onClick={() => setOpen(false)} />
         <div ref={menuRef} className="kb-assignee-menu" style={menuStyle} role="dialog" aria-modal="true" aria-label="Assign card">
           <div className="kb-assignee-mobile-head">
             <strong>Assign card</strong>

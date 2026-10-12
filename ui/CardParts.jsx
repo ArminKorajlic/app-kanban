@@ -213,6 +213,15 @@ export function FoldingSection({ title, meta, summary, open, onToggle, className
 // is transformed, so a fixed menu inside it would be positioned against it.
 const PHONE = '(max-width: 640px)'
 
+// A press outside an open menu closes it, except a press on its backdrop: the
+// backdrop closes the menu on its own click, which also ends the tap there. If
+// the press closed the menu, the backdrop would vanish under the finger and a
+// touch screen would deliver the tap to whatever lies beneath (a card opens).
+export function pressedOutside(event, ...refs) {
+  if (event.target.closest?.('[data-layer-backdrop]')) return false
+  return refs.every(ref => !ref.current?.contains(event.target))
+}
+
 function usePopover() {
   const rootRef = useRef(null)
   const [open, setOpen] = useState(false)
@@ -221,7 +230,7 @@ function usePopover() {
   useEffect(() => {
     if (!open) return undefined
     const closeOnOutsidePress = event => {
-      if (!rootRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false)
+      if (pressedOutside(event, rootRef, menuRef)) setOpen(false)
     }
     document.addEventListener('pointerdown', closeOnOutsidePress)
     return () => document.removeEventListener('pointerdown', closeOnOutsidePress)
@@ -231,7 +240,7 @@ function usePopover() {
     setOpen(value => !value)
   }
   const layer = menu => (sheet ? createPortal(<>
-    <div className="kb-popover-backdrop" aria-hidden="true" onClick={() => setOpen(false)} />
+    <div className="kb-popover-backdrop" data-layer-backdrop aria-hidden="true" onClick={() => setOpen(false)} />
     {menu}
   </>, document.body) : menu)
   const menuClass = `kb-popover-menu${sheet ? ' is-sheet' : ''}`
