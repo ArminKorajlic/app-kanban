@@ -28,11 +28,23 @@ ID = re.compile(r'^[a-f0-9]{32}$')
 HOST = re.compile(r'^[a-z0-9](?:[a-z0-9.-]{0,250}[a-z0-9])?(?::[0-9]{1,5})?$')
 SECRET = re.compile(r'^[A-Za-z0-9_-]{32,128}$')
 ASSET = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
-MAX_DOC = 256 * 1024
+# A board is stored in pieces (see "Board pieces" below) and saves and polls
+# exchange only the pieces that changed, so this limit now bounds what a member
+# downloads when opening the board for the first time (or after the change log
+# no longer reaches back to their copy), not the cost of every edit.
+# TODO(board size): when real boards approach MAX_DOC, page the cards within
+# each list and send a first copy in chunks instead of raising this further.
+# Members learn these limits from the board object (`limits`); keep the
+# fallbacks in domain.js in step for hosts that do not report them.
+MAX_DOC = 2 * 1024 * 1024
 MAX_ASSET = 5 * 1024 * 1024
-# Card details live beside the board in one 'card' record per card, because
-# the board document is capped (MAX_DOC) and resent whole on every edit. A long
-# description keeps only a preview in the document; activity is never in it.
+MAX_BOARD_FILES = 500
+MAX_BOARD_FILE_BYTES = 100 * 1024 * 1024
+# Saves since this many versions ago can be sent as changes; an older copy is
+# replaced by the whole board.
+MAX_CHANGE_LOG = 1000
+# Card details live beside the board in one 'card' record per card. A long
+# description keeps only a preview on the board; activity is never on it.
 # Keep these in step with activity.js.
 NOTES_PREVIEW_CHARS = 400
 MAX_NOTES_CHARS = 16000
@@ -139,6 +151,71 @@ def document(doc):
     return doc
 
 
+# ---- Board pieces
+#
+# The board row keeps the lists ('columns') and the other top-level settings
+# ('meta'); each card is a 'board-card' record keyed '<board>/<card>'; every save
+# appends a 'board-change' record keyed '<board>/<version>' that names the pieces
+# it changed. A member holding version N asks for the pieces changed since N
+# and saves only the pieces it changed. Two saves conflict only when they touch
+# the same piece, never merely because both happened.
+
+BOARD_PIECES = ('cards', 'columns')
+
+
+def card_key(oid, card_id):
+    return f'{oid}/{card_id}'
+
+
+def change_key(oid, version):
+    return f'{oid}/{version:012d}'
+
+
+def card_entry_bytes(card_id, card):
+    """This card's share of `json.dumps(board)`, including its separator."""
+    try:
+        return len(json.dumps(card_id)) + len(json.dumps(card, allow_nan=False)) + 4
+    except (ValueError, TypeError):
+        fail(400, 'invalid-board', 'The board is not valid JSON.')
+
+
+def document_bytes(meta, columns, cards_bytes, card_count):
+    """`len(json.dumps(board))` from the stored pieces, without assembling the board."""
+    skeleton = len(json.dumps({**meta, 'columns': columns, 'cards': {}}, allow_nan=False))
+    return skeleton + (cards_bytes - 2 if card_count else 0)
+
+
+def piece_changes(raw):
+    """Validate a member's changed pieces: {'cards': {id: card or None}, 'columns'?: [...], 'meta'?: {...}}."""
+    if not isinstance(raw, dict) or not raw or set(raw) - {'cards', 'columns', 'meta'}:
+        fail(400, 'invalid-board', 'Board changes must name cards, columns or meta.')
+    cards = raw.get('cards', {})
+    if not isinstance(cards, dict) or any(not CARD_ID.fullmatch(k) or not (v is None or isinstance(v, dict)) for k, v in cards.items()):
+        fail(400, 'invalid-board', 'Invalid card changes.')
+    if 'columns' in raw and not isinstance(raw['columns'], list):
+        fail(400, 'invalid-board', 'A board must contain columns and cards.')
+    if 'meta' in raw and (not isinstance(raw['meta'], dict) or set(raw['meta']) & set(BOARD_PIECES)):
+        fail(400, 'invalid-board', 'Invalid board settings.')
+    return {'cards': cards, **{k: raw[k] for k in ('columns', 'meta') if k in raw}}
+
+
+def board_difference(before, after):
+    """The pieces an older Kanban's whole-board save changed, in the shape piece_changes returns."""
+    cards = {cid: card for cid, card in after['cards'].items() if before['cards'].get(cid) != card}
+    cards.update({cid: None for cid in before['cards'] if cid not in after['cards']})
+    pieces = {'cards': cards}
+    if after['columns'] != before['columns']:
+        pieces['columns'] = after['columns']
+    meta = {k: v for k, v in after.items() if k not in BOARD_PIECES}
+    if meta != {k: v for k, v in before.items() if k not in BOARD_PIECES}:
+        pieces['meta'] = meta
+    return pieces
+
+
+def touched_pieces(pieces):
+    return {'card:' + cid for cid in pieces['cards']} | {name for name in ('columns', 'meta') if name in pieces}
+
+
 class Service:
     def __init__(self, root, *, host, app_id, request=federation_request, resolve=None, owner_name=None, now=time.time):
         self.store = Store(root)
@@ -148,6 +225,115 @@ class Service:
         self.resolve = resolve
         self.owner_name = str(owner_name or '').strip() or self.host
         self.now = now
+        self.store_boards_in_pieces()
+
+    def store_boards_in_pieces(self):
+        """Convert boards saved as one document (before pieces) once, on the first request after updating."""
+        if self.store.get('schema', 'board-pieces'):
+            return
+        with self.store.transaction():
+            if self.store.get('schema', 'board-pieces'):
+                return
+            for row in self.store.list('board'):
+                if 'doc' in row:
+                    self.write_board_pieces(row, row.pop('doc'))
+                    self.store.put('board', row['id'], row)
+            self.store.put('schema', 'board-pieces', {'version': 1})
+
+    def write_board_pieces(self, row, doc):
+        """Store a whole board as `row`'s pieces, replacing any it had.
+
+        It has no change history: a member's next poll receives the whole
+        board. Long descriptions move into card records here, as a save would.
+        """
+        oid = row['id']
+        self.store.delete_prefix('board-card', oid + '/')
+        self.store.delete_prefix('board-change', oid + '/')
+        total = 0
+        for card_id, card in doc['cards'].items():
+            if isinstance(card, dict) and isinstance(card.get('notes'), str) \
+                    and len(card['notes']) > NOTES_PREVIEW_CHARS and not isinstance(card.get('notesLength'), int):
+                record = self.card_record(row, card_id)
+                record['notes'] = card['notes']
+                self.store.put('card', card_key(oid, card_id), record)
+                card['notesLength'] = len(card['notes'])
+                card['notes'] = notes_preview(card['notes'])
+            size = card_entry_bytes(card_id, card)
+            total += size
+            self.store.put('board-card', card_key(oid, card_id), {'card': card, 'bytes': size})
+        row.update(columns=doc['columns'], meta={k: v for k, v in doc.items() if k not in BOARD_PIECES},
+                   cards_bytes=total, card_count=len(doc['cards']), log_floor=row['version'])
+
+    def board_document(self, row):
+        cards = {key.split('/', 1)[1]: piece['card'] for key, piece in self.store.scan('board-card', row['id'] + '/')}
+        return {**row['meta'], 'columns': row['columns'], 'cards': cards}
+
+    def board_card(self, row, card_id):
+        piece = self.store.get('board-card', card_key(row['id'], card_id))
+        return piece['card'] if piece else None
+
+    def changes_since(self, row, since):
+        """The pieces changed after version `since`, or None when the log no longer reaches back that far."""
+        if since < row['log_floor'] or since > row['version']:
+            return None
+        cards, columns, meta = set(), False, False
+        for _, entry in self.store.scan('board-change', row['id'] + '/', after=change_key(row['id'], since)):
+            cards.update(entry['cards'])
+            columns = columns or entry['columns']
+            meta = meta or entry['meta']
+        changes = {'cards': {cid: self.board_card(row, cid) for cid in sorted(cards)}}
+        if columns: changes['columns'] = row['columns']
+        if meta: changes['meta'] = row['meta']
+        return changes
+
+    def touched_since(self, row, since):
+        touched = set()
+        for _, entry in self.store.scan('board-change', row['id'] + '/', after=change_key(row['id'], since)):
+            touched |= touched_pieces({'cards': dict.fromkeys(entry['cards']),
+                **{name: True for name in ('columns', 'meta') if entry[name]}})
+        return touched
+
+    def since_reply(self, row, since):
+        """What a member holding version `since` needs to reach the current version."""
+        changes = self.changes_since(row, since)
+        if changes is None:
+            return {'version': row['version'], 'doc': self.board_document(row)}
+        return {'version': row['version'], 'since': since, 'changes': changes}
+
+    def commit_pieces(self, row, pieces):
+        """Save changed pieces as the board's next version and log which pieces changed.
+
+        The caller persists `row`. Refuses a board that would pass MAX_DOC.
+        """
+        oid = row['id']
+        cards = pieces['cards']
+        total, count, stored = row['cards_bytes'], row['card_count'], {}
+        for card_id, card in cards.items():
+            previous = self.store.get('board-card', card_key(oid, card_id))
+            if previous:
+                total -= previous['bytes']; count -= 1
+            if card is not None:
+                stored[card_id] = {'card': card, 'bytes': card_entry_bytes(card_id, card)}
+                total += stored[card_id]['bytes']; count += 1
+        columns = pieces.get('columns', row['columns'])
+        meta = pieces.get('meta', row['meta'])
+        if document_bytes(meta, columns, total, count) > MAX_DOC:
+            fail(413, 'board-too-large', 'The board is too large.')
+        for card_id in cards:
+            if card_id in stored:
+                self.store.put('board-card', card_key(oid, card_id), stored[card_id])
+            else:
+                self.store.delete('board-card', card_key(oid, card_id))
+                self.store.delete('card', card_key(oid, card_id))
+        row.update(columns=columns, meta=meta, cards_bytes=total, card_count=count)
+        row['version'] += 1
+        row['label'] = str(meta.get('title') or row['label'])[:120]
+        self.store.put('board-change', change_key(oid, row['version']), {'version': row['version'],
+            'cards': sorted(cards), 'columns': 'columns' in pieces, 'meta': 'meta' in pieces})
+        floor = row['version'] - MAX_CHANGE_LOG
+        if floor > row['log_floor']:
+            self.store.delete_prefix('board-change', oid + '/', through=change_key(oid, floor))
+            row['log_floor'] = floor
 
     def close(self):
         self.store.close()
@@ -176,7 +362,8 @@ class Service:
             members[key] = {k:v for k,v in member.items() if k in ('host','name','handle','role','pending','collaborator_id','host_owner')}
             members[key]['member_id'] = key
             members[key]['active'] = not member.get('pending') and 0 <= self.now()-last <= PRESENCE_TTL
-        return {'handoff':row.get('handoff'), 'local_id':row.get('local_id'), 'id':row['id'], 'host':self.host, 'app':'kanban', 'kind':'board', 'label':row['label'], 'version':row['version'], 'members':members, 'transport':PROTOCOL}
+        return {'handoff':row.get('handoff'), 'local_id':row.get('local_id'), 'id':row['id'], 'host':self.host, 'app':'kanban', 'kind':'board', 'label':row['label'], 'version':row['version'], 'members':members, 'transport':PROTOCOL,
+                'limits':{'board_bytes':MAX_DOC,'files':MAX_BOARD_FILES,'file_bytes':MAX_BOARD_FILE_BYTES}}
 
     def member(self, row, member_id, credential):
         check(member_id, ID, 'member id')
@@ -207,20 +394,24 @@ class Service:
         Returns None when presence or the name must be persisted; the caller
         then takes the transactional path, which re-checks the membership.
         """
-        row = self.board(oid)
-        mid = check(body.get('member_id'),ID,'member id')
-        credential = check(body.get('credential'),SECRET,'member credential')
-        member = self.member(row,mid,credential)
-        if member.get('pending'):
-            fail(409,'invitation-pending','Accept the invitation before using this board.')
-        if self.presence_changes(member, self.claimed_name(body)):
-            return None
-        return self.operation(row,op,body,{'host':member['host'],'name':member.get('name')})
+        with self.store.snapshot():
+            row = self.board(oid)
+            mid = check(body.get('member_id'),ID,'member id')
+            credential = check(body.get('credential'),SECRET,'member credential')
+            member = self.member(row,mid,credential)
+            if member.get('pending'):
+                fail(409,'invitation-pending','Accept the invitation before using this board.')
+            if self.presence_changes(member, self.claimed_name(body)):
+                return None
+            return self.operation(row,op,body,{'host':member['host'],'name':member.get('name')})
 
-    def state(self, row, since=-1):
+    def state(self, row, since=-1, changes=False):
+        """The board object, plus what changed since `since`: changed pieces when
+        the member asked for `changes` and the log reaches back, else the whole board."""
         result = {'status':'ok', 'version':row['version'], 'object':self.public(row)}
         if row['version'] > since:
-            result['doc'] = row['doc']
+            result.update(self.since_reply(row, since) if changes and since >= 0
+                else {'doc': self.board_document(row)})
         return result
 
     async def remote(self, host, oid, payload):
@@ -251,7 +442,7 @@ class Service:
         local_id = body.get('local_id')
         if local_id is not None and (not isinstance(local_id,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,199}',local_id)):
             fail(400,'invalid-local-id','Invalid local board identity.')
-        row = {'id':oid,'local_id':local_id,'label':str(body.get('label') or doc.get('title') or 'Board')[:120], 'doc':doc,'version':1,
+        row = {'id':oid,'local_id':local_id,'label':str(body.get('label') or doc.get('title') or 'Board')[:120], 'version':1,
                'members':{self.host:{'host':self.host,'name':self.owner_name,'role':'editor','host_owner':True,'seen':self.now()}}, 'invites':{}}
         with self.store.transaction():
             existing = self.store.get('board',oid)
@@ -261,6 +452,7 @@ class Service:
                 if not local_id or existing.get('local_id') != local_id:
                     fail(409,'board-id-conflict','This identity already names another board.')
                 return {'id':oid,'host':self.host,'version':existing['version'],'transport':PROTOCOL}
+            self.write_board_pieces(row, doc)
             self.store.put('board',oid,row)
         return {'id':oid,'host':self.host,'version':1,'transport':PROTOCOL}
 
@@ -457,9 +649,9 @@ class Service:
                 row['members'].pop(mid)
                 self.store.put('board',oid,row)
                 return {'status':'left'}
-            if op not in ('state','write','asset-read','asset-write','asset-delete','card-read','notes-write','activity-append'):
+            if op not in ('state','write','patch','asset-read','asset-write','asset-delete','card-read','notes-write','activity-append'):
                 fail(400,'invalid-operation','Unsupported board operation.')
-            if op in ('write','asset-write','asset-delete','notes-write','activity-append') and member['role'] != 'editor':
+            if op in ('write','patch','asset-write','asset-delete','notes-write','activity-append') and member['role'] != 'editor':
                 fail(403,'read-only','This board member is a viewer.')
             changes = self.presence_changes(member, self.claimed_name(body))
             member.update(changes)
@@ -472,13 +664,12 @@ class Service:
         return self.store.get('card',row['id']+'/'+card_id) or {
             'board_id':row['id'],'card_id':card_id,'notes':None,'notes_version':0,'activity':[]}
 
-    def settle_cards(self, row, doc):
-        """Keep the incoming document's descriptions consistent with the card records.
+    def settle_notes(self, row, cards):
+        """Keep the descriptions in changed cards consistent with the card records.
 
-        Long descriptions move out of the document (this also migrates boards
-        written before card records existed). Returns True when the incoming
-        document changed, so the writer adopts the host's copy instead of
-        keeping full text the board no longer carries.
+        Long descriptions move out of the board into the card record. Returns
+        True when it changed an incoming card, so the writer adopts the host's
+        copy instead of keeping full text the board no longer carries.
 
         A writer may still send the full text it held before the move; that is
         the same description, not an edit. Any other change to a moved-out
@@ -486,12 +677,9 @@ class Service:
         accepting it would truncate the description.
         """
         changed_doc = False
-        previous = row['doc'].get('cards',{})
-        for card_id in set(previous) - set(doc['cards']):
-            if isinstance(card_id,str): self.store.delete('card',row['id']+'/'+card_id)
-        for card_id, card in doc['cards'].items():
-            if not isinstance(card,dict) or not isinstance(card_id,str) or not CARD_ID.fullmatch(card_id): continue
-            before = previous.get(card_id) if isinstance(previous.get(card_id),dict) else {}
+        for card_id, card in cards.items():
+            if card is None: continue
+            before = self.board_card(row, card_id) or {}
             notes = card.get('notes') if isinstance(card.get('notes'),str) else ''
             if isinstance(before.get('notesLength'),int):
                 if notes != before.get('notes'):
@@ -506,22 +694,27 @@ class Service:
                 continue
             if 'notesLength' in card:
                 card.pop('notesLength'); changed_doc = True
-            changed = notes != (before.get('notes') if isinstance(before.get('notes'),str) else '')
+            previous = before.get('notes') if isinstance(before.get('notes'),str) else ''
+            changed = notes != previous
             if not changed and len(notes) <= NOTES_PREVIEW_CHARS: continue
+            # The same cap as a description saved on its own (card_operation), so
+            # a board save cannot store an unbounded description either.
+            if changed and len(notes) > MAX_NOTES_CHARS and len(notes) > len(previous):
+                fail(413,'notes-too-long',f'A description can be at most {MAX_NOTES_CHARS} characters.')
             record = self.card_record(row,card_id)
             if changed: record['notes_version'] += 1
             if len(notes) > NOTES_PREVIEW_CHARS:
                 record['notes'] = notes
                 card['notes'] = notes_preview(notes); card['notesLength'] = len(notes)
                 changed_doc = True
-            self.store.put('card',row['id']+'/'+card_id,record)
+            self.store.put('card',card_key(row['id'],card_id),record)
         return changed_doc
 
     def card_operation(self, row, op, body, actor):
         card_id = check(body.get('card_id'),CARD_ID,'card id')
-        key = row['id']+'/'+card_id
+        key = card_key(row['id'],card_id)
         record = self.card_record(row,card_id)
-        card = row['doc'].get('cards',{}).get(card_id)
+        card = self.board_card(row,card_id)
         external = isinstance(card,dict) and isinstance(card.get('notesLength'),int)
         current_notes = record['notes'] if external else (card.get('notes') if isinstance(card,dict) and isinstance(card.get('notes'),str) else '')
         if op == 'card-read':
@@ -541,7 +734,7 @@ class Service:
             return {'status':'conflict','notes':current_notes,'notes_version':record['notes_version']}
         if notes == current_notes:
             return {'status':'ok','notes_version':record['notes_version'],'version':row['version'],'card':card}
-        # Older descriptions may already be longer (moved out by settle_cards);
+        # Older descriptions may already be longer (moved out before this cap);
         # they stay editable as long as an edit does not make them longer.
         if len(notes) > MAX_NOTES_CHARS and len(notes) > len(current_notes):
             fail(413,'notes-too-long',f'A description can be at most {MAX_NOTES_CHARS} characters.')
@@ -552,8 +745,7 @@ class Service:
         else:
             record['notes'] = None
             card['notes'] = notes; card.pop('notesLength',None)
-        document(row['doc'])
-        row['version'] += 1
+        self.commit_pieces(row,{'cards':{card_id:card}})
         self.store.put('card',key,record)
         return {'status':'ok','notes_version':record['notes_version'],'version':row['version'],'card':card}
 
@@ -561,22 +753,36 @@ class Service:
         if op == 'state':
             since = body.get('since_version',-1)
             if type(since) is not int: fail(400,'invalid-version','Version must be an integer.')
-            return self.state(row,since)
+            return self.state(row,since,body.get('changes') is True)
         if op in ('card-read','notes-write','activity-append'):
             return self.card_operation(row,op,body,actor)
+        if op == 'patch':
+            # A newer Kanban sends only the pieces it changed, with the version it
+            # started from. It conflicts only when someone else changed one of the
+            # same pieces since then; either way the reply brings the writer from
+            # its version to the current one.
+            pieces = piece_changes(body.get('pieces'))
+            expected = body.get('expected_version')
+            if type(expected) is not int or not 0 <= expected <= row['version']:
+                fail(400,'invalid-version','Expected version must be a version of this board.')
+            if expected < row['log_floor'] or touched_pieces(pieces) & self.touched_since(row,expected):
+                return {'status':'conflict',**self.since_reply(row,expected)}
+            self.settle_notes(row,pieces['cards'])
+            self.commit_pieces(row,pieces)
+            return {'status':'ok',**self.since_reply(row,expected)}
         if op == 'write':
+            # An older Kanban sends the whole board; it is saved as the pieces it changed.
             doc = board_shape(body.get('doc'))
             expected = body.get('expected_version')
             if type(expected) is not int or expected < 1:
                 fail(400,'invalid-version','Expected version must be a positive integer.')
             if expected != row['version']:
-                return {'status':'conflict','version':row['version'],'doc':row['doc']}
-            settled = self.settle_cards(row,doc)
-            document(doc)
-            row['doc']=doc; row['version']+=1
-            row['label']=str(doc.get('title') or row['label'])[:120]
+                return {'status':'conflict','version':row['version'],'doc':self.board_document(row)}
+            pieces = board_difference(self.board_document(row),doc)
+            settled = self.settle_notes(row,pieces['cards'])
+            self.commit_pieces(row,pieces)
             # Only a document the host changed is sent back; otherwise the writer's copy is exact.
-            return {'status':'ok','version':row['version'],**({'doc':doc} if settled else {})}
+            return {'status':'ok','version':row['version'],**({'doc':self.board_document(row)} if settled else {})}
         aid = check(body.get('asset_id'),ASSET,'asset id')
         key = row['id']+'/'+aid
         if op == 'asset-read':
@@ -595,8 +801,8 @@ class Service:
         except ValueError: fail(400,'invalid-asset','Invalid attachment encoding.')
         if not decoded or len(decoded)>MAX_ASSET:
             fail(413,'asset-too-large','Attachment is empty or too large.')
-        assets = [a for a in self.store.list('asset') if a['board_id']==row['id'] and a['id']!=aid]
-        if len(assets)>=100 or sum(a['bytes'] for a in assets)+len(decoded)>100*1024*1024:
+        count, total = self.store.usage('asset',row['id']+'/','bytes',excluding=key)
+        if count>=MAX_BOARD_FILES or total+len(decoded)>MAX_BOARD_FILE_BYTES:
             fail(413,'assets-full','Board attachment limit reached.')
         self.store.put('asset',key,{'id':aid,'board_id':row['id'],'mime':mime,'data':data,'bytes':len(decoded)})
         return {'status':'ok'}
@@ -605,9 +811,10 @@ class Service:
         check(host,HOST,'board host'); check(oid,ID,'board id')
         if host == self.host:
             if op in READ_ONLY_OPS:
-                row = self.board(oid)
-                if not self.presence_changes(row['members'][self.host], self.owner_name):
-                    return self.operation(row,op,body,{'host':self.host,'name':self.owner_name})
+                with self.store.snapshot():
+                    row = self.board(oid)
+                    if not self.presence_changes(row['members'][self.host], self.owner_name):
+                        return self.operation(row,op,body,{'host':self.host,'name':self.owner_name})
             with self.store.transaction():
                 row = self.board(oid)
                 changes = self.presence_changes(row['members'][self.host], self.owner_name)
@@ -704,10 +911,8 @@ class Service:
                         if existing and existing.get('staged'):
                             fail(409,'migration-staged','The board handoff is not active.')
                         self.store.delete('board',oid)
-                        for asset in self.store.list('asset'):
-                            if asset['board_id']==oid: self.store.delete('asset',oid+'/'+asset['id'])
-                        for record in self.store.list('card'):
-                            if record['board_id']==oid: self.store.delete('card',oid+'/'+record['card_id'])
+                        for kind in ('asset','card','board-card','board-change'):
+                            self.store.delete_prefix(kind,oid+'/')
                     result={'status':'deleted'}
                 elif len(p)==3 and p[2]=='leave' and method=='POST':
                     host,oid=p[:2]; key=check(host,HOST,'host')+'/'+check(oid,ID,'board id')
@@ -720,9 +925,11 @@ class Service:
                     result={'status':'left'}
                 elif len(p)==3 and p[2]=='state' and method in ('GET','PUT'):
                     if method=='GET':
-                        try: body={'since_version':int(query_value('since_version',-1))}
+                        try: body={'since_version':int(query_value('since_version',-1)),'changes':query_value('changes')=='1'}
                         except (ValueError,TypeError): fail(400,'invalid-version','Invalid version.')
                     result=await self.state_operation(p[0],p[1],'state' if method=='GET' else 'write',body)
+                elif len(p)==3 and p[2]=='changes' and method=='POST':
+                    result=await self.state_operation(p[0],p[1],'patch',body)
                 elif len(p)==4 and p[2]=='cards' and method=='GET':
                     result=await self.state_operation(p[0],p[1],'card-read',{'card_id':p[3]})
                 elif len(p)==5 and p[2]=='cards' and (p[4],method) in (('notes','PUT'),('activity','POST')):

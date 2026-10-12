@@ -298,11 +298,21 @@ export function cardAssigneeLabel(card, members = []) {
   return name || saved
 }
 
-// A shared board's host refuses a document larger than this (MAX_DOC in
-// collaboration/service.py), and every edit resends the whole document.
-export const SHARED_BOARD_LIMIT_BYTES = 256 * 1024
-// From this share of the limit the board warns that it is nearly full.
-export const BOARD_NEARLY_FULL_SHARE = 0.95
+// What a shared board's host accepts. A host reports its own limits with the
+// board (`object.limits`, collaboration/service.py); these are the limits of a
+// host that predates that report, so the warning matches what it enforces.
+export const OLDER_HOST_LIMITS = { boardBytes: 256 * 1024, files: 100, fileBytes: 100 * 1024 * 1024 }
+// From this share of a limit the board warns, and tells its owner, that it is nearly full.
+export const BOARD_NEARLY_FULL_SHARE = 0.9
+
+// The limits a host reported, or those of an older host.
+export function hostLimits(object) {
+  const reported = object?.limits
+  const valid = value => Number.isSafeInteger(value) && value > 0
+  return valid(reported?.board_bytes) && valid(reported?.files) && valid(reported?.file_bytes)
+    ? { boardBytes: reported.board_bytes, files: reported.files, fileBytes: reported.file_bytes }
+    : OLDER_HOST_LIMITS
+}
 
 // The size the host measures: Python's json.dumps defaults, i.e. ", " and
 // ": " separators and every non-ASCII character escaped as \uXXXX (two
@@ -332,21 +342,16 @@ export function hostDocumentBytes(value) {
   return 2 + entries.reduce((sum, [key, item]) => sum + hostDocumentBytes(key) + 2 + hostDocumentBytes(item), 0) + (entries.length - 1) * 2
 }
 
-// A shared board's host also stores at most this many attachment files, and
-// this many bytes of them (collaboration/service.py, asset-write).
-export const SHARED_BOARD_FILE_LIMIT = 100
-export const SHARED_BOARD_FILE_BYTES = 100 * 1024 * 1024
-
 // Text and files fill up separately; whichever is closer to its limit decides.
-export function boardCapacity(doc) {
+export function boardCapacity(doc, limits = OLDER_HOST_LIMITS) {
   const bytes = hostDocumentBytes(doc)
   const files = Object.values(doc?.cards || {}).flatMap(card => (Array.isArray(card?.attachments) ? card.attachments : []))
   const fileBytes = files.reduce((sum, file) => sum + (Number.isFinite(file?.size) ? file.size : 0), 0)
-  const share = bytes / SHARED_BOARD_LIMIT_BYTES
-  const fileShare = Math.max(files.length / SHARED_BOARD_FILE_LIMIT, fileBytes / SHARED_BOARD_FILE_BYTES)
+  const share = bytes / limits.boardBytes
+  const fileShare = Math.max(files.length / limits.files, fileBytes / limits.fileBytes)
   return {
-    bytes, limit: SHARED_BOARD_LIMIT_BYTES, share, nearlyFull: share >= BOARD_NEARLY_FULL_SHARE,
-    files: files.length, fileLimit: SHARED_BOARD_FILE_LIMIT, fileBytes, fileShare,
+    bytes, limit: limits.boardBytes, share, nearlyFull: share >= BOARD_NEARLY_FULL_SHARE,
+    files: files.length, fileLimit: limits.files, fileBytes, fileByteLimit: limits.fileBytes, fileShare,
     filesNearlyFull: fileShare >= BOARD_NEARLY_FULL_SHARE,
   }
 }

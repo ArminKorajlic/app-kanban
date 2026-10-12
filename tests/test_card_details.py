@@ -119,10 +119,19 @@ class CardDetails(unittest.IsolatedAsyncioTestCase):
                                   {'notes': 'x' * (MAX_NOTES_CHARS + 1), 'expected_version': 0}, 413)
         self.assertEqual(refused['code'], 'notes-too-long')
 
+    def store_as_one_document(self, doc):
+        """Save the board the way a host did before boards were stored in pieces, then convert it."""
+        row = self.a.store.get('board', self.oid)
+        for key in ('columns', 'meta', 'cards_bytes', 'card_count', 'log_floor'): row.pop(key)
+        row['doc'] = doc
+        self.a.store.put('board', self.oid, row)
+        self.a.store.delete('schema', 'board-pieces')
+        self.a.store_boards_in_pieces()
+
     async def test_older_description_over_the_cap_can_be_edited_but_not_grown(self):
-        # Descriptions written before the cap move out whole on the first write.
+        # Descriptions written before the cap move out whole when the board is converted to pieces.
         older = 'y' * (MAX_NOTES_CHARS + 500)
-        await self.write(self.a, board(older))
+        self.store_as_one_document(board(older))
         version = (await self.call(self.a, 'GET', f'{self.base}/cards/c1'))['notes_version']
         longer = await self.call(self.a, 'PUT', f'{self.base}/cards/c1/notes',
                                  {'notes': older + ' more', 'expected_version': version}, 413)
@@ -130,6 +139,12 @@ class CardDetails(unittest.IsolatedAsyncioTestCase):
         shorter = await self.call(self.a, 'PUT', f'{self.base}/cards/c1/notes',
                                   {'notes': older[:-100], 'expected_version': version})
         self.assertEqual(shorter['card']['notesLength'], len(older) - 100)
+
+    async def test_a_board_save_cannot_grow_a_description_past_the_cap(self):
+        # An older Kanban saves descriptions through the board, not the card route.
+        refused = await self.write(self.a, board('z' * (MAX_NOTES_CHARS + 1)), 413)
+        self.assertEqual(refused['code'], 'notes-too-long')
+        self.assertEqual((await self.call(self.a, 'GET', f'{self.base}/cards/c1'))['notes'], '')
 
     async def test_activity_author_is_stamped_by_the_host_not_the_client(self):
         await self.join()

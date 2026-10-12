@@ -21,6 +21,17 @@ A clean, mobile-first kanban board for Möbius.
 - Concurrent-edit safe: every change merges through compare-and-swap writes,
   and open boards repaint live when someone else edits, so two people editing
   the same board don't overwrite each other.
+- Shared boards are stored in pieces on their host (each card, the lists, the
+  board settings) with a numbered log of changes. An edit sends only the pieces
+  it changed and a poll receives only the pieces changed since its copy, so
+  both stay small however large the board grows; a new member downloads the
+  board once. Two edits conflict only when they change the same card or the
+  lists at the same moment.
+- Shared-board limits, set by the host and shown to members: 2 MB for the board
+  itself (descriptions over 400 characters and activity are kept beside it),
+  16,000 characters per description, and 500 attachment files or 100 MB per
+  board (5 MB per file, 8 per card). At 90% of a limit the board shows a warning
+  and Kanban sends its owner one notification.
 - Invitations appear without a refresh, shared boards show who is active, and
   cards include a compact two-line preview of their notes.
 

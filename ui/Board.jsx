@@ -14,7 +14,8 @@ import {
   normalizeBoardView,
   sameAssignment,
 } from '../assignment.js'
-import { loadMemberAvatar, resolveMemberHandles, pullShared, createInvite, inviteByHandle, getMembers, revokeCollaborator, groupCollaborators, collaboratorForHost, selfCollaborator, inviteDeliveryNotice, shareBoard, cacheSubscriptionIsAuthoritative, rememberSharedState, sharedBoardPollDelay, acceptSharedPoll, createSharedRefreshLifecycle } from '../sync.js'
+import { loadMemberAvatar, resolveMemberHandles, pullShared, createInvite, inviteByHandle, getMembers, revokeCollaborator, groupCollaborators, collaboratorForHost, selfCollaborator, inviteDeliveryNotice, shareBoard, cacheSubscriptionIsAuthoritative, rememberSharedState, sharedBoardPollDelay, acceptSharedPoll, createSharedRefreshLifecycle, notifyOwner } from '../sync.js'
+import { alertCapacity, formatBytes } from '../capacityAlerts.js'
 import { applyBoardOp, columnMoveAnchor, cardPullUrls, hasExternalNotes } from '../operations.js'
 import { mergeActivity, MAX_NOTES_CHARS } from '../activity.js'
 import { parsePullRequestUrl, pullRequestStatus } from '../prMatching.js'
@@ -38,6 +39,7 @@ import {
   cardAssigneeLabel,
   boardAccess,
   boardCapacity,
+  hostLimits,
   boardFingerprints,
   cardFingerprint,
   changedCardIds,
@@ -732,6 +734,8 @@ export default memo(function Board({
   const [assignmentUndo, setAssignmentUndo] = useState(null)
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [members, setMembers] = useState(null)
+  // The limits the board's host enforces, known from its first poll.
+  const [sharedLimits, setSharedLimits] = useState(null)
   const [identity, setIdentity] = useState(null)
   const [verifiedHandles, setVerifiedHandles] = useState({})
   const [memberAvatars, setMemberAvatars] = useState({})
@@ -1203,6 +1207,7 @@ export default memo(function Board({
 
   useEffect(() => {
     setMembers(null)
+    setSharedLimits(null)
     if (share?.hosted) {
       refreshMembers().catch(() => {})
     }
@@ -1321,6 +1326,8 @@ export default memo(function Board({
             if (state.object) {
               const nextMembers = memberRecords(state.object)
               if (nextMembers) setMembers(current => sameMembers(current, nextMembers) ? current : nextMembers)
+              const limits = hostLimits(state.object)
+              setSharedLimits(current => current && Object.keys(limits).every(key => current[key] === limits[key]) ? current : limits)
             }
             if (pendingEntriesRef.current.length === 0) setSyncNote('')
             return true
@@ -1980,7 +1987,14 @@ export default memo(function Board({
   const access = boardAccess(share, online && availability.kind !== 'terminal')
   const accessStatus = availability.kind === 'terminal' ? '' : access.status
   // Only a shared board has a size limit that matters (private boards can grow to ~50 MB).
-  const capacity = share ? boardCapacity(board) : null
+  // Measuring walks the whole board, so it runs only when the board changes.
+  const capacity = useMemo(() => share && sharedLimits && board ? boardCapacity(board, sharedLimits) : null, [board, share, sharedLimits])
+  const capacityAlert = capacity ? `${capacity.nearlyFull}/${capacity.filesNearlyFull}` : ''
+  useEffect(() => {
+    const storage = window.mobius?.storage
+    if (!capacity || !storage) return
+    alertCapacity({ storage, notify: notifyOwner, boardId, boardTitle: board?.title, capacity }).catch(() => {})
+  }, [boardId, capacityAlert])
   const hasFilters = !!filterText.trim() || filterLabels.length > 0
   const narrowed = hasFilters || boardView !== 'all'
   const linkedCard = board?.cards?.[openCardId]
@@ -2218,11 +2232,11 @@ export default memo(function Board({
         <span>{availability.message}</span>
       </div>}
       {capacity?.nearlyFull && <div className="kb-capacity-warning" role="status">
-        <strong>This board is almost full: {Math.round(capacity.bytes / 1024)} KB of {Math.round(capacity.limit / 1024)} KB.</strong>
+        <strong>This board is almost full: {formatBytes(capacity.bytes)} of {formatBytes(capacity.limit)}.</strong>
         <span> When it’s full, no one can save changes to it. To make room, move long descriptions into attachments, delete finished cards or move them to another board, or split this board in two.</span>
       </div>}
       {capacity?.filesNearlyFull && <div className="kb-capacity-warning" role="status">
-        <strong>This board’s attachment space is almost used up: {capacity.files} of {capacity.fileLimit} files, {Math.round(capacity.fileBytes / 1048576)} MB of 100 MB.</strong>
+        <strong>This board’s attachment space is almost used up: {capacity.files} of {capacity.fileLimit} files, {formatBytes(capacity.fileBytes)} of {formatBytes(capacity.fileByteLimit)}.</strong>
         <span> New files can’t be added once it’s full. Remove attachments you no longer need, or keep new files on another board.</span>
       </div>}
       {recoveryButton && <div className="kb-recovery" role="status">

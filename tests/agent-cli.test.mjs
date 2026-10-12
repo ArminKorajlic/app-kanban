@@ -52,6 +52,11 @@ test('CLI writes private and shared boards through their authority using JSON an
       res.setHeader('ETag', '"local"')
       return send(local)
     }
+    if (req.url === '/api/apps/1/service/boards/peer.example/obj/changes') {
+      // A host from before boards were stored in pieces (see older-host.mjs).
+      res.writeHead(400, { 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ protocol: 'kanban/1', code: 'invalid-operation', detail: 'Unsupported board operation.' }))
+    }
     if (req.url.startsWith('/api/apps/1/service/boards/peer.example/obj/state')) {
       if (req.method === 'PUT') {
         const data = JSON.parse(body)
@@ -87,11 +92,12 @@ test('CLI writes private and shared boards through their authority using JSON an
     await run('move-card', { type: 'delete-card', cardId: 'stable', toColumnId: 'done' })
     assert.ok(remote.cards.stable)
     assert.deepEqual(remote.columns[1].cardIds, ['stable'])
-    assert.equal(sharedWrites, 4)
+    // The repeated add changed nothing, so it sent nothing.
+    assert.equal(sharedWrites, 3)
     await assert.rejects(run('update-card', { cardId: 'stable', patch: { notes: { unsafe: true } } }), /notes must be a string/)
     await assert.rejects(run('add-card', { id: '__proto__', columnId: 'todo', title: 'Unsafe' }), /safe non-empty string/)
     await assert.rejects(run('read', undefined, '../../2/boards/private'), /Usage/)
-    assert.equal(sharedWrites, 4)
+    assert.equal(sharedWrites, 3)
     const priorCacheWrites = cacheWrites
     serviceUnavailable = true
     await assert.rejects(run('update-card', {cardId:'stable', patch:{notes:'Unconfirmed'}}), /Service unavailable/)
@@ -99,7 +105,7 @@ test('CLI writes private and shared boards through their authority using JSON an
     shared = false; local = makeBoard(); cacheWrites = 0
     assert.equal((await run('add-card', input)).authority, 'private')
     assert.equal(cacheWrites, 1)
-    assert.equal(sharedWrites, 4)
+    assert.equal(sharedWrites, 3)
 
     local.cards.stable.assignee = 'Me'
     const dryRun = await run('sync-open-prs', undefined, '--dry-run')

@@ -21,12 +21,30 @@ function independent(entry) {
 const store = () => window.mobius?.storage
 
 let _auth = null
+let _appId = null
 export function configureSync(token, appId) {
   // The frame supplies a decimal string; tests and direct callers may use a number.
   const id = typeof appId === 'string' && /^[1-9]\d*$/.test(appId) ? Number(appId) : appId
   if (!Number.isSafeInteger(id) || id < 1) throw new Error('Kanban app identity is required.')
   API = `/api/apps/${id}/service/boards`
   _auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  _appId = id
+  confirmedCopies.clear()
+  wholeBoardHosts.clear()
+}
+
+// A push to this deployment's owner that opens Kanban. Returns false when it
+// could not be sent; a missed alert must never interrupt the board.
+export async function notifyOwner({ title, body, tag }, request = fetch) {
+  try {
+    const response = await request('/api/notifications/send', {
+      method: 'POST', headers: _auth,
+      body: JSON.stringify({ title, body, tag, target: `/shell/?app=${_appId}` }),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
 }
 
 async function _json(res) {
@@ -308,17 +326,100 @@ export async function leaveBoard(boardId, entry) {
 
 // ---- sync engine
 
+// ---- board pieces
+//
+// A shared board's host stores it in pieces (collaboration/service.py, "Board
+// pieces"): the lists, the other board settings ('meta') and each card. Saves
+// send only the pieces an operation changed and polls receive only the pieces
+// changed since the copy this instance last confirmed, so their size no longer
+// grows with the board. Callers still see whole boards: the confirmed copy
+// below turns changes back into one.
+
+const BOARD_PIECES = new Set(['cards', 'columns'])
+const boardMeta = doc => Object.fromEntries(Object.entries(doc).filter(([key]) => !BOARD_PIECES.has(key)))
+const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+// What changed from `before` to `after`: {cards: {id: card or null}, columns?, meta?}.
+export function changedPieces(before, after) {
+  const cards = {}
+  for (const [id, card] of Object.entries(after.cards)) if (!sameJson(before.cards[id], card)) cards[id] = card
+  for (const id of Object.keys(before.cards)) if (!Object.hasOwn(after.cards, id)) cards[id] = null
+  const pieces = { cards }
+  if (!sameJson(before.columns, after.columns)) pieces.columns = after.columns
+  const meta = boardMeta(after)
+  if (!sameJson(boardMeta(before), meta)) pieces.meta = meta
+  return pieces
+}
+
+export function applyBoardPieces(doc, pieces) {
+  const cards = { ...doc.cards }
+  for (const [id, card] of Object.entries(pieces.cards || {})) {
+    if (card === null) delete cards[id]
+    else cards[id] = card
+  }
+  return { ...(pieces.meta || boardMeta(doc)), columns: pieces.columns || doc.columns, cards }
+}
+
+const hasPieces = pieces => Object.keys(pieces.cards).length > 0 || 'columns' in pieces || 'meta' in pieces
+
+// The newest board each host confirmed to this instance: {version, doc}. Only
+// host replies update it; it is never the optimistic UI or an offline copy.
+const confirmedCopies = new Map()
+// Hosts that answered a piece save as an older Kanban; they get whole boards.
+const wholeBoardHosts = new Set()
+const copyKey = entry => `${entry.host}/${entry.oid}`
+
+// Adopt a host reply: a whole board, or changes since `since` applied to the
+// newest known copy that lies between `since` and the reply's version (the
+// confirmed copy or `known`, the writer's own base). Returns the copy, or null
+// when the changes cannot be placed and the next pull must ask for the whole board.
+function adoptHostReply(entry, reply, known = null) {
+  const key = copyKey(entry)
+  const copy = confirmedCopies.get(key) || null
+  if (!Number.isSafeInteger(reply?.version) || reply.version < 0) return copy
+  if (copy && reply.version < copy.version) return copy
+  let doc = null
+  if (reply.doc && typeof reply.doc === 'object' && !Array.isArray(reply.doc)) {
+    doc = reply.doc
+  } else if (reply.changes && typeof reply.changes === 'object') {
+    const from = [copy, known]
+      .filter(candidate => candidate && candidate.version >= reply.since && candidate.version <= reply.version)
+      .sort((a, b) => b.version - a.version)[0]
+    if (from) doc = applyBoardPieces(from.doc, reply.changes)
+  } else if (copy && reply.version === copy.version) {
+    return copy
+  }
+  if (!doc) {
+    confirmedCopies.delete(key)
+    return null
+  }
+  const next = { version: reply.version, doc }
+  confirmedCopies.set(key, next)
+  return next
+}
+
 export async function pullShared(entry, sinceVersion, request = fetch) {
   independent(entry)
+  const copy = confirmedCopies.get(copyKey(entry))
+  const query = copy ? `since_version=${copy.version}&changes=1` : `since_version=${sinceVersion}`
   let res
   try { res = await _json(await request(
-    `${API}/${encodeURIComponent(entry.host)}/${entry.oid}/state?since_version=${sinceVersion}`,
+    `${API}/${encodeURIComponent(entry.host)}/${entry.oid}/state?${query}`,
     { headers: _auth },
   )) } catch(error) {
     if (entry.publishing && error.code === 'board-missing') throw publicationPending()
     throw error
   }
-  return res // {status, version, doc?, object?}
+  const current = adoptHostReply(entry, res)
+  const { doc: _doc, changes, since: _since, ...answer } = res
+  if (!current) {
+    if (changes) throw invalidSharedPoll()
+    return res
+  }
+  // Answer the caller's own question: the whole board unless it already holds this version.
+  return current.version === sinceVersion
+    ? { ...answer, version: current.version }
+    : { ...answer, version: current.version, doc: structuredClone(current.doc) }
 }
 
 export async function putSharedAsset(entry, assetId, mime, data, request = fetch) {
@@ -373,7 +474,8 @@ export async function appendSharedActivity(entry, cardId, entries, request = fet
   return Array.isArray(result.activity) ? result.activity : []
 }
 
-export function cardDetailsUnsupported(error) {
+// A host running an older Kanban answers a route or operation it lacks this way.
+export function olderHostRefused(error) {
   return ['invalid-operation', 'route-missing'].includes(error?.code)
 }
 
@@ -488,7 +590,22 @@ export function rememberSharedState(previous, entry, state) {
     doc: normalizeBoard(structuredClone(state.doc)) }
 }
 
+async function savePieces(entry, pieces, expectedVersion, request) {
+  return _json(await request(`${API}/${encodeURIComponent(entry.host)}/${entry.oid}/changes`, {
+    method: 'POST', headers: _auth, body: JSON.stringify({ pieces, expected_version: expectedVersion }),
+  }))
+}
+
+async function saveWholeBoard(entry, doc, expectedVersion, request) {
+  return _json(await request(`${API}/${encodeURIComponent(entry.host)}/${entry.oid}/state`, {
+    method: 'PUT', headers: _auth, body: JSON.stringify({ doc, expected_version: expectedVersion }),
+  }))
+}
+
 // Apply `op` to the shared doc with CAS retry. Returns the doc that landed.
+// Only the pieces `op` changed are sent; the host refuses them only when
+// someone else changed one of the same pieces, and its reply brings this copy
+// up to date either way.
 export async function pushSharedOp(entry, op, onError, request = fetch, confirmed = null) {
   try { independent(entry) } catch (error) { onError?.(error); return null }
   // This is a version-bound hint, never the optimistic UI or an offline copy.
@@ -502,7 +619,10 @@ export async function pushSharedOp(entry, op, onError, request = fetch, confirme
       const base = normalizeBoard(structuredClone(state.doc))
       if (!base) return null
       let next
-      try { next = op(base) || base } catch (error) {
+      try {
+        const draft = structuredClone(base)
+        next = op(draft) || draft
+      } catch (error) {
         // A cached version may predate a card's creation. Re-read before
         // treating a domain validation error as terminal and discarding intent.
         if (!hinted) throw error
@@ -511,23 +631,34 @@ export async function pushSharedOp(entry, op, onError, request = fetch, confirme
         continue
       }
       hinted = false
-      const res = await _json(await request(
-        `${API}/${encodeURIComponent(entry.host)}/${entry.oid}/state`,
-        {
-          method: 'PUT',
-          headers: _auth,
-          body: JSON.stringify({ doc: next, expected_version: state.version }),
-        },
-      ))
+      const pieces = changedPieces(base, next)
+      if (!hasPieces(pieces)) return { doc: next, version: state.version }
+      const known = { version: state.version, doc: base }
+      let res
+      if (!wholeBoardHosts.has(entry.host)) {
+        try {
+          res = await savePieces(entry, pieces, state.version, request)
+        } catch (error) {
+          if (!olderHostRefused(error)) throw error
+          wholeBoardHosts.add(entry.host)
+        }
+      }
+      if (!res) {
+        res = await saveWholeBoard(entry, next, state.version, request)
+        // A whole-board save is answered with the host's copy only when the host
+        // changed it (it moves long descriptions out); otherwise ours is exact.
+        if (res.status !== 'conflict' && !res.doc) res = { ...res, doc: next }
+      }
+      const adopted = adoptHostReply(entry, res, known)
       if (res.status === 'conflict') {
-        // A conflict already carries the latest authoritative document/version.
-        state = rememberSharedState(null, entry, res)
+        // A conflict normally carries what changed since our version; without
+        // that, read the board again rather than retry from a stale copy.
+        state = adopted && adopted.version === res.version
+          ? { host: entry.host, oid: entry.oid, version: adopted.version, doc: adopted.doc } : null
         continue
       }
-      // The host may move long descriptions out of the board while writing
-      // (collaboration/service.py settle_cards); it then returns its copy, which
-      // must replace ours or the next write would resend text it refuses.
-      return { doc: (res.doc && normalizeBoard(res.doc)) || next, version: res.version }
+      const landed = adopted || { version: res.version, doc: next }
+      return { doc: normalizeBoard(structuredClone(landed.doc)), version: landed.version }
     } catch (e) {
       onError?.(e)
       return null

@@ -1,8 +1,8 @@
 // Card activity: what changed on a card, who changed it, and when.
 //
-// Activity deliberately lives outside the board document. A shared board's
-// document is capped by its host (256 KB) and every edit resends it whole, so
-// per-card history is kept beside the board: on the hosting Kanban service for
+// Activity deliberately lives outside the board document, which a shared
+// board's host caps and a new member downloads whole, so per-card history is
+// kept beside the board: on the hosting Kanban service for
 // shared boards (one record per card, author stamped by the host) and in app
 // storage for private boards. Assignment history predates this and stays on
 // the card; the card sheet shows both in one timeline.

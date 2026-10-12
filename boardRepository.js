@@ -1,7 +1,7 @@
 // Board authority belongs here, not to the UI or a caller's guessed file.
 // The storage adapter differs between browser and CLI; board semantics do not.
 import { boardPath, normalizeBoard, casMutate, uid } from './storage.js'
-import { pullShared, pushSharedOp, readSharedCard, writeSharedNotes, appendSharedActivity, cardDetailsUnsupported } from './sync.js'
+import { pullShared, pushSharedOp, readSharedCard, writeSharedNotes, appendSharedActivity, olderHostRefused } from './sync.js'
 import { MAX_NOTES_CHARS, activityPath, cardSnapshot, createActivityEntries, describeCardChange, mergeActivity, operationCardId } from './activity.js'
 import { PUBLICATION, publicationPending } from './publication.js'
 import { applyBoardOp, completeCardNotes } from './operations.js'
@@ -220,7 +220,7 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
       try {
         card = await readSharedCard(entry, op.cardId, request)
       } catch (error) {
-        if (cardDetailsUnsupported(error)) return null
+        if (olderHostRefused(error)) return null
         throw finalHostRefusal(error)
       }
       if (typeof card.notes !== 'string') throw boardError('Card no longer exists.', 'missing-card')
@@ -265,7 +265,7 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
         : await appendPrivateActivity(boardId, cardId, entries)
       return { cardId, entries: saved, status: 'saved' }
     } catch (error) {
-      return { cardId, entries, status: cardDetailsUnsupported(error) ? 'unsupported' : 'failed' }
+      return { cardId, entries, status: olderHostRefused(error) ? 'unsupported' : 'failed' }
     }
   }
 
@@ -301,7 +301,7 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
         notesVersion: Number.isInteger(card.notes_version) ? card.notes_version : 0,
         activity: mergeActivity(card.activity, []) }
     } catch (error) {
-      if (cardDetailsUnsupported(error)) return { status: 'unsupported', notes: null, notesVersion: null, activity: [] }
+      if (olderHostRefused(error)) return { status: 'unsupported', notes: null, notesVersion: null, activity: [] }
       throw error
     }
   }
@@ -320,7 +320,7 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
     try {
       result = await writeNotesEdit(entry, cardId, notes, from)
     } catch (error) {
-      if (cardDetailsUnsupported(error)) return throughBoard()
+      if (olderHostRefused(error)) return throughBoard()
       throw error
     }
     if (result.status === 'conflict') return { status: 'conflict', notes: result.notes, notesVersion: result.notes_version }

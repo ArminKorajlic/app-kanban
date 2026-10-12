@@ -1,4 +1,5 @@
 import { configureSync as configureFixture } from '../sync.js'
+import { asOlderHost } from './older-host.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createBoardRepository, isDiscardableBoardError, isRetryableBoardError } from '../boardRepository.js'
@@ -26,7 +27,7 @@ function fixture(shared = false) {
     async list() { return [{ name: 'b.json' }] },
   }
   let conflict = false
-  const request = async (path, options = {}) => {
+  const request = asOlderHost(async (path, options = {}) => {
     if (options.method === 'PUT') {
       const body = JSON.parse(options.body)
       if (conflict) {
@@ -41,7 +42,7 @@ function fixture(shared = false) {
       return Response.json({ status: 'ok', version: ++version })
     }
     return Response.json({ doc: remote, version })
-  }
+  })
   return { storage, request, entry, files, local: () => local, remote: () => remote,
     writes: () => writes, conflict: () => { conflict = true } }
 }

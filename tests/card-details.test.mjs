@@ -1,4 +1,5 @@
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
+import { asOlderHost } from './older-host.mjs'
 import assert from 'node:assert/strict'
 import { configureSync, pushSharedOp } from '../sync.js'
 import { createBoardRepository } from '../boardRepository.js'
@@ -8,7 +9,8 @@ import {
   MAX_ACTIVITY_PER_CARD, MAX_NOTES_CHARS, activityPath, describeActivity, describeCardChange, mergeActivity,
 } from '../activity.js'
 
-configureSync('fixture', 1)
+// Each test talks to a fresh stand-in host: forget the copies a previous one confirmed.
+beforeEach(() => configureSync('fixture', 1))
 
 const card = (extra = {}) => ({ id: 'c1', title: 'Fix login', notes: '', label: 'none', due: '', checklist: [], attachments: [], ...extra })
 const snap = (c, column = 'To do') => ({ card: c, column })
@@ -99,7 +101,7 @@ function sharedFixture({ older = false, notesRefusal = null } = {}) {
     async set() {},
     async list() { return [{ name: 'b.json' }] },
   }
-  const request = async (url, options = {}) => {
+  const request = asOlderHost(async (url, options = {}) => {
     const method = options.method || 'GET'
     calls.push(`${method} ${url.replace('/api/apps/1/service/boards/peer.example/obj', '')}`)
     if (url.includes('/cards/') && older) {
@@ -127,7 +129,7 @@ function sharedFixture({ older = false, notesRefusal = null } = {}) {
       return Response.json({ status: 'ok', version })
     }
     return Response.json({ doc, version })
-  }
+  })
   return { storage, request, calls, activity, notes: () => notes, doc: () => doc, setNotes: text => { notes = text } }
 }
 
@@ -220,9 +222,9 @@ test('a writer adopts the host copy when the host moves a long description out',
   const long = 'x'.repeat(500)
   const settled = { v: 1, title: 'B', columns: [{ id: 'todo', name: 'To do', cardIds: ['c1'] }],
     cards: { c1: card({ notes: `${'x'.repeat(399)}…`, notesLength: 500 }) } }
-  const request = async (url, options = {}) => (options.method === 'PUT'
+  const request = asOlderHost(async (url, options = {}) => (options.method === 'PUT'
     ? Response.json({ status: 'ok', version: 2, doc: settled })
-    : Response.json({ doc: { ...settled, cards: { c1: card({ notes: '' }) } }, version: 1 }))
+    : Response.json({ doc: { ...settled, cards: { c1: card({ notes: '' }) } }, version: 1 })))
   const landed = await pushSharedOp(entry, doc => { doc.cards.c1.notes = long; return doc }, null, request)
   assert.equal(landed.version, 2)
   assert.equal(landed.doc.cards.c1.notesLength, 500)
