@@ -50,7 +50,7 @@ test('a phone header is one row: the board menu reaches all boards and one Show 
 
 test('every board with lists gets the phone list bar, so a single list still has its name, add button and menu', () => {
   assert.match(board, /\{board\.columns\.length > 0 && <div className="kb-list-bar">/)
-  assert.match(phoneRules, /\.kb-addcard \{ display: none; \}/)
+  assert.match(phoneRules, /\.kb-addcard, \.kb-board-edge \{ display: none; \}/)
   assert.match(phoneRules, /\.kb-list-bar \.kb-list-nav \{[^}]*mask-image: linear-gradient/, 'a fade shows that more tabs scroll into view')
   assert.match(phoneRules, /\.kb-list-bar-menu \.kb-col-menu \{ margin: 0; \}/, 'the tab row never runs wider than the screen, or jumping to a list shifts the whole app sideways')
 })
@@ -59,5 +59,33 @@ test('on a phone a person who is the card’s only detail sits beside the title'
   const card = board.slice(board.indexOf('function Card('), board.indexOf('function memberRecords('))
   assert.match(card, /const personOnly = Boolean\(assignee\) && !\(labelled \|\| dueStatus \|\| progress\.total \|\| pullCount \|\| attachments\.length\)/)
   assert.match(phoneRules, /\.kb-card\.is-person-only \.kb-card-meta \{ position: absolute;/)
-  assert.match(phoneRules, /\.kb-col \{ width: calc\(100vw - 32px\);/, 'one list fills the screen, without the next one peeking in')
+  assert.match(phoneRules, /\.kb-col \{ flex: 0 0 auto; width: calc\(100vw - 32px\); max-width: none;/, 'one list fills the screen, without the next one peeking in')
+})
+
+test('quiet arrows appear at the board edges only while lists lie beyond them, and move the board by one list', () => {
+  assert.match(board, /const after = scroller\.scrollLeft \+ scroller\.clientWidth < scroller\.scrollWidth - 4/)
+  assert.match(board, /new ResizeObserver\(onScroll\)/, 'folding a list or resizing the window updates the arrows')
+  assert.match(board, /\{boardEdges\.after && <button type="button" className="kb-board-edge is-after" aria-label="Show more lists"[^>]*onClick=\{\(\) => scrollLists\(1\)\}>/)
+  assert.match(board, /\{boardEdges\.before && <button type="button" className="kb-board-edge is-before" aria-label="Show earlier lists"[^>]*onClick=\{\(\) => scrollLists\(-1\)\}>/)
+  assert.match(board, /scroller\.scrollBy\(\{ left: direction \* step, behavior: instant \? 'auto' : 'smooth' \}\)/, 'reduced motion jumps instead of gliding')
+})
+
+test('lists grow into spare width on wide screens, up to 400px each', () => {
+  assert.match(CSS, /\.kb-col \{ flex: 1 0 336px; width: 336px; max-width: 400px;/)
+})
+
+test('on a phone an empty list offers Add a card in place, and choice sheets rise from the bottom', () => {
+  assert.match(board, /\{!allCards\.length && !showGap && access\.canWrite && <button className="kb-empty-add" onClick=\{\(\) => addCard\(col\.id\)\}>/, 'only a truly empty list, so a new card never vanishes behind a filter')
+  assert.match(CSS, /\.kb-empty-add \{ display: none;/, 'desktop keeps its Add card bar instead')
+  assert.match(phoneRules, /\.kb-empty-add \{ display: inline-flex; \}/)
+  assert.match(phoneRules, /\.kb-sheet\.kb-switcher-panel, \.kb-sheet\.kb-show-sheet \{ top: auto; bottom: max\(8px, env\(safe-area-inset-bottom\)\); \}/)
+})
+
+test('sheets close with Close, never with the name of the Done list', () => {
+  const show = board.slice(board.indexOf('className="kb-sheet kb-show-sheet"'), board.indexOf('{filterControls}', board.indexOf('className="kb-sheet kb-show-sheet"')))
+  assert.match(show, />Close<\/button>/)
+  assert.doesNotMatch(show, />Done</)
+  const assignee = board.slice(board.indexOf('<div className="kb-assignee-mobile-head">'), board.indexOf('<div className="kb-assignee-mobile-head">') + 300)
+  assert.match(assignee, />Close<\/button>/)
+  assert.doesNotMatch(assignee, />Done</)
 })

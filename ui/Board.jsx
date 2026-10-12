@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, ChevronLeft, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, PullRequestOpen, Share, SquareCheckCheckboxChecked, Trash, User, X } from '@openai/apps-sdk-ui/components/Icon'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Filter, Grid, MagnifyingGlassSearch, Paperclip, Plus, PullRequestOpen, Share, SquareCheckCheckboxChecked, Trash, User, X } from '@openai/apps-sdk-ui/components/Icon'
 import { uid, subscribeBoard, getBoard, boardPath, normalizeBoard, loadUi, saveBoardView, saveListFolds, saveSeenCards, loadAssignmentLog, subscribeAssignmentLog, updateAssignmentLog } from '../storage.js'
 import {
   assignmentRef,
@@ -48,6 +48,7 @@ import {
   dueDateStatus,
   formatDueDate,
   labelDisplayName,
+  labelsInOrder,
   listIsFolded,
   visibleToFullIndex,
 } from '../domain.js'
@@ -351,7 +352,7 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, chip = false
       >
         {selectedLabel
           ? <><MemberAvatar member={selectedMember || { name: selectedLabel }} className="kb-chip-avatar" presence={false} />{selectedLabel}</>
-          : <><Plus aria-hidden="true" />Add assignee</>}
+          : <><Plus aria-hidden="true" />Assignee</>}
       </button> : <button
         type="button"
         className="kb-assignee-trigger"
@@ -373,7 +374,7 @@ function AssigneePicker({ card, canWrite, members, share, onUpdate, chip = false
         <div ref={menuRef} className="kb-assignee-menu" style={menuStyle} role="dialog" aria-modal="true" aria-label="Assign card">
           <div className="kb-assignee-mobile-head">
             <strong>Assign card</strong>
-            <button type="button" className="kb-btn kb-btn-quiet" onClick={() => setOpen(false)}>Done</button>
+            <button type="button" className="kb-btn kb-btn-quiet" onClick={() => setOpen(false)}>Close</button>
           </div>
           <label className="kb-assignee-search">
             <MagnifyingGlassSearch aria-hidden="true" />
@@ -708,6 +709,8 @@ export default memo(function Board({
   const [filtersOpen, setFiltersOpen] = useState(false)
   // On a phone the view switch and the filters share one sheet behind the Show chip.
   const [showOpen, setShowOpen] = useState(false)
+  // Whether lists lie past either edge of the board, for the edge arrows.
+  const [boardEdges, setBoardEdges] = useState({ before: false, after: false })
   const showSheetRef = useModalFocus(showOpen, () => setShowOpen(false))
   const [filterText, setFilterText] = useState('')
   const [filterLabels, setFilterLabels] = useState([])
@@ -1036,12 +1039,29 @@ export default memo(function Board({
         if (gap < distance) { distance = gap; nearest = lane.dataset.colId }
       }
       setActiveColumnId(nearest)
+      const before = scroller.scrollLeft > 4
+      const after = scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 4
+      setBoardEdges(current => (current.before === before && current.after === after ? current : { before, after }))
     }
     const onScroll = () => { if (!frame) frame = requestAnimationFrame(update) }
     update()
     scroller.addEventListener('scroll', onScroll, { passive: true })
-    return () => { scroller.removeEventListener('scroll', onScroll); cancelAnimationFrame(frame) }
+    // Folding a list or resizing the window changes what fits without scrolling.
+    const resizes = typeof ResizeObserver === 'function' ? new ResizeObserver(onScroll) : null
+    if (resizes) [scroller, ...scroller.children].forEach(element => resizes.observe(element))
+    return () => { scroller.removeEventListener('scroll', onScroll); resizes?.disconnect(); cancelAnimationFrame(frame) }
   }, [boardId, boardLoaded, columnCount])
+
+  // The edge arrows move the board by one list.
+  const scrollLists = direction => {
+    const scroller = boardScrollRef.current
+    if (!scroller) return
+    const lane = Array.from(scroller.children).find(element => element.dataset?.colId)
+    const gap = parseFloat(getComputedStyle(scroller).columnGap) || 16
+    const step = lane ? lane.getBoundingClientRect().width + gap : scroller.clientWidth * 0.8
+    const instant = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    scroller.scrollBy({ left: direction * step, behavior: instant ? 'auto' : 'smooth' })
+  }
 
   // Keep the highlighted tab visible as you swipe between lists.
   useEffect(() => {
@@ -2112,7 +2132,8 @@ export default memo(function Board({
       onChange={event => setFilterText(event.target.value)}
     />
     <div className="kb-filter-labels" aria-label="Filter by label">
-      {Object.entries(LABELS).map(([name, color]) => {
+      {labelsInOrder(Object.keys(LABELS), board.labelNames).map(name => {
+        const color = LABELS[name]
         const active = filterLabels.includes(name)
         return <button
           key={name}
@@ -2182,7 +2203,7 @@ export default memo(function Board({
           <div className="kb-sheet-grab" />
           <div className="kb-sheet-row kb-sheet-row-between">
             <h3>Show</h3>
-            <button className="kb-btn kb-btn-quiet" onClick={() => setShowOpen(false)}>Done</button>
+            <button className="kb-btn kb-btn-quiet" onClick={() => setShowOpen(false)}>Close</button>
           </div>
           <BoardViewSwitch view={boardView} counts={viewCounts} onChange={chooseBoardView} />
           {filterControls}
@@ -2346,6 +2367,10 @@ export default memo(function Board({
                         : boardView === 'changed' ? 'Nothing changed here'
                         : 'Nothing unassigned here'}</div>
                 )}
+                {/* Only a truly empty list: a card added while filters or a view hide the others could vanish at once. */}
+                {!allCards.length && !showGap && access.canWrite && <button className="kb-empty-add" onClick={() => addCard(col.id)}>
+                  <Plus /> Add a card
+                </button>}
               </div>
               {access.canWrite && <button className="kb-addcard" onClick={() => addCard(col.id)}>
                 <Plus /> Add card
@@ -2355,6 +2380,8 @@ export default memo(function Board({
         })}
         {access.canWrite && board.columns.length > 0 && <button className="kb-addcol" onClick={addColumn}><Plus /> Add list</button>}
       </div>
+      {boardEdges.before && <button type="button" className="kb-board-edge is-before" aria-label="Show earlier lists" title="Earlier lists" onClick={() => scrollLists(-1)}><ChevronLeft aria-hidden="true" /></button>}
+      {boardEdges.after && <button type="button" className="kb-board-edge is-after" aria-label="Show more lists" title="More lists" onClick={() => scrollLists(1)}><ChevronRight aria-hidden="true" /></button>}
 
       {drag?.moved && (
         <div

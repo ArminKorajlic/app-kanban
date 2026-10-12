@@ -9,7 +9,7 @@ import { useModalFocus } from './modalFocus.js'
 import { describeActivity } from '../activity.js'
 import { describeAssignmentEvent, restorableAssignment } from '../assignment.js'
 import { isPreviewImage, loadCardAttachment, MAX_CARD_ATTACHMENTS } from '../attachments.js'
-import { checklistProgress, dueDateStatus, formatDueDate, labelDisplayName, MAX_LABEL_NAME_CHARS, shortLinkText } from '../domain.js'
+import { checklistProgress, dueDateStatus, formatDueDate, labelDisplayName, labelsInOrder, MAX_LABEL_NAME_CHARS, shortLinkText } from '../domain.js'
 import { cardPullUrls } from '../operations.js'
 import { parsePullRequestUrl } from '../prMatching.js'
 
@@ -326,6 +326,7 @@ export function LabelChip({ label, labels, names, canWrite, onChange, onRename }
     if (name !== (names?.[color] || '')) onRename(color, name)
   }
   const colors = Object.entries(labels).filter(([name]) => name !== 'none')
+  const choices = labelsInOrder(colors.map(([name]) => name), names).map(name => [name, labels[name]])
   return <div className="kb-chip-wrap" ref={rootRef}>
     <button
       type="button"
@@ -338,11 +339,11 @@ export function LabelChip({ label, labels, names, canWrite, onChange, onRename }
     >
       {current
         ? <><span className="kb-chip-swatch" style={{ background: labels[current] }} aria-hidden="true" />{labelDisplayName(current, names)}</>
-        : <><Plus aria-hidden="true" />Add label</>}
+        : <><Plus aria-hidden="true" />Label</>}
     </button>
     {open && page === 'choose' && layer(<div ref={menuRef} className={menuClass} role="menu" aria-label="Choose label">
       <div className="kb-menu-heading">Label</div>
-      {colors.map(([name, color]) => <button
+      {choices.map(([name, color]) => <button
         key={name}
         type="button"
         role="menuitemradio"
@@ -428,7 +429,7 @@ export function DueChip({ due, canWrite, onChange }) {
       disabled={!canWrite}
       onClick={toggle}
     >
-      {due ? <><Calendar aria-hidden="true" />{dueChipText(due)}</> : <><Plus aria-hidden="true" />Add due date</>}
+      {due ? <><Calendar aria-hidden="true" />{dueChipText(due)}</> : <><Plus aria-hidden="true" />Due date</>}
     </button>
     {open && layer(<div ref={menuRef} className={menuClass} role="menu" aria-label="Choose due date">
       <div className="kb-menu-heading">Due date</div>
@@ -709,7 +710,9 @@ export function PullRequestSection({ card, canWrite, online, statuses, onUpdate,
 
 // ---- attachments ----
 
-export function AttachmentImage({ boardId, share, attachment, className, alt = '' }) {
+// `unavailable` replaces the grey "Unavailable" box when the picture can't be
+// loaded (for example while the board is reconnecting).
+export function AttachmentImage({ boardId, share, attachment, className, alt = '', unavailable = null }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
   useEffect(() => {
@@ -720,7 +723,7 @@ export function AttachmentImage({ boardId, share, attachment, className, alt = '
     }).catch(() => { if (alive) setFailed(true) })
     return () => { alive = false }
   }, [boardId, share?.host, share?.oid, attachment.id, attachment.path])
-  if (failed) return <span className={`${className} kb-image-missing`} role="img" aria-label="Image unavailable" />
+  if (failed) return unavailable || <span className={`${className} kb-image-missing`} role="img" aria-label="Image unavailable" />
   if (!src) return <span className={`${className} kb-image-loading`} aria-hidden="true" />
   return <img className={className} src={src} alt={alt} />
 }
@@ -735,11 +738,13 @@ function fileBadge(attachment) {
 export function CardTileAttachment({ boardId, share, attachments }) {
   const attachment = attachments.find(isPreviewImage) || attachments[0]
   if (!attachment) return null
-  if (isPreviewImage(attachment)) return <AttachmentImage boardId={boardId} share={share} attachment={attachment} className="kb-card-picture" alt="" />
-  return <div className="kb-card-file">
+  const fileLine = <div className="kb-card-file">
     <span className="kb-card-file-badge">{fileBadge(attachment)}</span>
     <span className="kb-card-file-name">{attachment.name || 'Attachment'}</span>
   </div>
+  // A picture that can't be reached shrinks to its file line instead of an empty box.
+  if (isPreviewImage(attachment)) return <AttachmentImage boardId={boardId} share={share} attachment={attachment} className="kb-card-picture" alt="" unavailable={fileLine} />
+  return fileLine
 }
 
 export const ATTACHMENT_PREVIEW_ITEMS = 3

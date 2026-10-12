@@ -387,3 +387,21 @@ test('closing a menu by tapping its backdrop never taps what lies beneath it', a
   assert.equal(parts.match(/pressedOutside\(event, rootRef, menuRef\)/g).length, 1)
   assert.equal(board.match(/pressedOutside\(event, rootRef, menuRef\)/g).length, 1)
 })
+
+test('a board picture shimmers while it loads and shrinks to its file line when it cannot be reached', async () => {
+  const theme = await readFile(new URL('../theme.js', import.meta.url), 'utf8')
+  const parts = await readFile(new URL('../ui/CardParts.jsx', import.meta.url), 'utf8')
+  assert.match(parts, /if \(failed\) return unavailable \|\| <span className=\{`\$\{className\} kb-image-missing`\}/)
+  const tile = parts.slice(parts.indexOf('export function CardTileAttachment('), parts.indexOf('export const ATTACHMENT_PREVIEW_ITEMS'))
+  assert.match(tile, /className="kb-card-picture" alt="" unavailable=\{fileLine\} \/>/)
+  assert.match(theme, /\.kb-image-loading \{[^}]*animation: kb-image-shimmer/)
+  assert.match(theme, /@media \(prefers-reduced-motion: reduce\) \{ \.kb-image-loading \{ animation: none; \} \}/)
+})
+
+test('empty detail chips use short words but keep a full accessible name', async () => {
+  const parts = await readFile(new URL('../ui/CardParts.jsx', import.meta.url), 'utf8')
+  const board = await readFile(new URL('../ui/Board.jsx', import.meta.url), 'utf8')
+  assert.match(parts, /'Add label'\}[^]*?<Plus aria-hidden="true" \/>Label<\/>/)
+  assert.match(parts, /'Add due date'\}[^]*?<Plus aria-hidden="true" \/>Due date<\/>/)
+  assert.match(board, /'Add assignee'\}[^]*?<Plus aria-hidden="true" \/>Assignee<\/>/)
+})

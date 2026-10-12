@@ -413,6 +413,24 @@ export const CSS = `
   .kb-addcard:hover { border-color: color-mix(in srgb, var(--accent) 44%, var(--border)); background: color-mix(in srgb, var(--accent) 6%, transparent); color: var(--text); }
   .kb-addcard > svg, .kb-addcol > svg, .kb-btn > svg, .kb-newtile > svg { width: 18px; height: 18px; flex: 0 0 auto; }
   .kb-addcard:focus-visible { outline: 2px solid var(--accent); }
+  /* Quiet arrows at the board's edges when more lists lie beyond them. */
+  .kb-board-edge {
+    position: fixed; top: 50%; z-index: 4;
+    width: 36px; height: 36px; margin-top: -18px;
+    display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: 50%;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    color: var(--muted); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+    cursor: pointer; opacity: 0.85; transition: opacity 0.15s ease, color 0.15s ease;
+  }
+  .kb-board-edge:hover { opacity: 1; color: var(--text); }
+  .kb-board-edge:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 2px; }
+  .kb-board-edge > svg { width: 18px; height: 18px; }
+  .kb-board-edge.is-before { left: 12px; }
+  .kb-board-edge.is-after { right: 12px; }
+  .kb-empty-add { display: none; align-self: center; align-items: center; gap: 6px; min-height: 44px; padding: 0 14px; border: 1px dashed var(--border); border-radius: 10px; background: transparent; color: var(--muted); font: 600 13.5px var(--font); cursor: pointer; }
+  .kb-empty-add > svg { width: 16px; height: 16px; }
   .kb-input {
     width: 100%;
     border: 1px solid var(--border);
@@ -571,7 +589,13 @@ export const CSS = `
   .kb-inline-field .kb-input { flex: 1 1 auto; min-width: 0; }
   .kb-inline-field .kb-btn { flex: 0 0 auto; }
   .kb-sheet h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); }
-  .kb-image-loading { background: color-mix(in srgb, var(--muted) 13%, var(--surface-2)); }
+  .kb-image-loading {
+    background: linear-gradient(90deg, var(--surface-2) 0%, color-mix(in srgb, var(--muted) 14%, var(--surface-2)) 50%, var(--surface-2) 100%);
+    background-size: 200% 100%;
+    animation: kb-image-shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes kb-image-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+  @media (prefers-reduced-motion: reduce) { .kb-image-loading { animation: none; } }
   .kb-image-missing { position: relative; }
   .kb-image-missing::after {
     content: 'Unavailable';
@@ -683,7 +707,8 @@ export const CSS = `
   .kb-filterbar { padding: 10px 20px 0; gap: 7px; }
   .kb-filter-label-btn { border-radius: 8px; font-weight: 600; }
   .kb-board { gap: 16px; padding: 18px 20px 22px; scroll-padding-inline: 20px; }
-  .kb-col { width: 336px; border-radius: 16px; background: color-mix(in srgb, var(--surface-2) 32%, var(--bg)); }
+  /* Lists grow into spare width on wide screens, up to 400px each. */
+  .kb-col { flex: 1 0 336px; width: 336px; max-width: 400px; border-radius: 16px; background: color-mix(in srgb, var(--surface-2) 32%, var(--bg)); }
   .kb-col-head { gap: 6px; padding: 8px 12px 8px 15px; }
   .kb-col-name { font-size: 15px; font-weight: 650; letter-spacing: -0.015em; }
   .kb-count { padding: 3px 7px; font-size: 14px; font-weight: 650; background: color-mix(in srgb, var(--surface) 68%, var(--surface-2)); }
@@ -1134,10 +1159,14 @@ export const CSS = `
     .kb-col:not(.is-renaming) > .kb-col-head { display: none; }
     .kb-col-head { flex-wrap: wrap; }
     .kb-col-name { flex-basis: calc(100% - 180px); }
-    .kb-addcard { display: none; }
+    .kb-addcard, .kb-board-edge { display: none; }
+    /* With no Add card bar, an empty list offers the same action in place. */
+    .kb-empty-add { display: inline-flex; }
+    /* Choice sheets rise from the bottom, where a thumb reaches, like the menus. */
+    .kb-sheet.kb-switcher-panel, .kb-sheet.kb-show-sheet { top: auto; bottom: max(8px, env(safe-area-inset-bottom)); }
     /* Each list spans the screen; the tabs jump between them. */
     .kb-board { gap: 16px; padding: 8px 16px 12px; scroll-padding-inline: 16px; }
-    .kb-col { width: calc(100vw - 32px); background: transparent; border-radius: 0; }
+    .kb-col { flex: 0 0 auto; width: calc(100vw - 32px); max-width: none; background: transparent; border-radius: 0; }
     .kb-col.kb-col-folded { background: color-mix(in srgb, var(--surface-2) 32%, var(--bg)); border-radius: 14px; }
     .kb-col > .kb-cards { padding: 0 0 8px; gap: 6px; }
     .kb-card { gap: 6px; padding: 10px 12px 9px; }

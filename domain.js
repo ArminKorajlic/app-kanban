@@ -45,6 +45,14 @@ export function labelDisplayName(color, labelNames) {
   return name || (color ? color.charAt(0).toLocaleUpperCase() + color.slice(1) : '')
 }
 
+// Label choices list the board's named labels first, then the unnamed
+// colours, each in colour order. "No label" ('none') goes last.
+export function labelsInOrder(colors, labelNames) {
+  const names = normalizeLabelNames(labelNames)
+  const rank = color => (color === 'none' ? 2 : names[color] ? 0 : 1)
+  return [...colors].sort((left, right) => rank(left) - rank(right))
+}
+
 export function defaultColumnColor(index) {
   if (index === 0) return null
   if (index === 1) return 'blue'

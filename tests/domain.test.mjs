@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   addChecklistItem,
+  labelsInOrder,
   assigneeAvatar,
   cardAssigneeLabel,
   assigneeHue,
@@ -238,4 +239,12 @@ test('the cards you open or change yourself are remembered as seen', async () =>
   assert.match(mutate, /markSeenRef\.current\(ownCardIds, optimistic\)/)
   assert.match(mutate, /markSeenRef\.current\(ownCardIds, landed\.doc\)/)
   assert.match(source, /if \(openCardPrint\) markSeenRef\.current\(\[openCardId\]\)/)
+})
+
+test('label choices list named labels first, unnamed colours after, and no label last', () => {
+  const colors = ['none', 'red', 'amber', 'green', 'blue', 'purple', 'pink']
+  const names = { red: 'Urgent', amber: 'Needs discussion', blue: 'Bug' }
+  assert.deepEqual(labelsInOrder(colors, names), ['red', 'amber', 'blue', 'green', 'purple', 'pink', 'none'])
+  assert.deepEqual(labelsInOrder(colors, {}), ['red', 'amber', 'green', 'blue', 'purple', 'pink', 'none'], 'with no names, colour order stays')
+  assert.deepEqual(colors[0], 'none', 'the input is not reordered in place')
 })
