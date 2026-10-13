@@ -15,6 +15,7 @@
 
 import { COLUMN_COLOR_KEYS, defaultColumnColor, isIsoDate, normalizeLabelNames } from './domain.js'
 import { cardPullUrls } from './operations.js'
+import { activityPrefix } from './activity.js'
 
 export const SCHEMA_V = 1
 
@@ -290,8 +291,39 @@ export async function createBoard(title) {
   return doc.id
 }
 
-export async function deleteBoard(id) {
-  await store().remove(boardPath(id))
+// Deleting a board deletes what this Möbius kept about it: its cards'
+// activity (private boards), the assignment changes it noticed, and the
+// personal view choices remembered for it. A shared board's host deletes the
+// board's own records (collaboration/service.py). The board goes first; every
+// cleanup is attempted, and any that failed is reported as an error.
+export async function deleteBoard(id, s = store()) {
+  await s.remove(boardPath(id))
+  const prefix = activityPrefix(id)
+  const results = await Promise.allSettled([
+    s.list(prefix).then(items => Promise.all((Array.isArray(items) ? items : []).map(item => s.remove(`${prefix}${item.name}`)))),
+    s.remove(assignmentLogPath(id)),
+    forgetBoardViews(id, s),
+  ])
+  const failed = results.find(result => result.status === 'rejected')
+  if (failed) throw new Error(`The board was deleted, but some of its history could not be: ${failed.reason?.message || failed.reason}`)
+}
+
+// The per-board entries of ui.json, which are personal and never shared.
+const PER_BOARD_UI = ['boardViews', 'collapsedLists', 'openedLists', 'seenCards']
+
+export function forgetBoardViews(id, s = store()) {
+  return updateDocument('ui.json', value => {
+    const next = structuredClone(normalizeUi(value))
+    let changed = false
+    for (const key of PER_BOARD_UI) {
+      if (next[key] && typeof next[key] === 'object' && Object.hasOwn(next[key], id)) {
+        delete next[key][id]
+        changed = true
+      }
+    }
+    if (next.lastBoardId === id) { next.lastBoardId = null; changed = true }
+    return changed ? next : undefined
+  }, s)
 }
 
 export function subscribeBoard(id, cb) {

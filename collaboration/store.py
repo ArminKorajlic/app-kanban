@@ -78,12 +78,18 @@ class Store:
 
     @contextmanager
     def snapshot(self):
-        """A consistent read across several statements (a board row and its pieces)."""
+        """A consistent read across several statements (a board row and its pieces).
+
+        It only reads, so ending it never writes: a failed read rolls back and
+        leaves the connection ready for the next request.
+        """
         self.db.execute('BEGIN')
         try:
             yield self
-        finally:
-            self.db.execute('COMMIT')
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
+        self.db.execute('COMMIT')
 
 
 def prefix_end(prefix):

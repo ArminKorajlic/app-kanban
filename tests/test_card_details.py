@@ -6,13 +6,15 @@ peer transport between two deployments.
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 from urllib.parse import urlsplit
 import httpx
 
 from collaboration.service import (Service, PROTOCOL, MAX_ACTIVITY_PER_CARD, MAX_NOTES_CHARS,
     NOTES_PREVIEW_CHARS)
 
-OWNER = {'scope': 'owner'}
+OWNER = {'scope': 'owner'}          # the owner's token: the agent helper
+APP = {'scope': 'app', 'app_id': 7}  # the Kanban app's own frame
 LONG = 'Long description. ' * 60   # > NOTES_PREVIEW_CHARS
 
 
@@ -47,8 +49,8 @@ class CardDetails(unittest.IsolatedAsyncioTestCase):
         for service in self.services.values(): service.close()
         self.temp.cleanup()
 
-    async def call(self, service, method, path, body=None, status=200):
-        result = await service.handle({'method': method, 'path': path, 'body': body, 'actor': OWNER, 'query': {}})
+    async def call(self, service, method, path, body=None, status=200, actor=OWNER):
+        result = await service.handle({'method': method, 'path': path, 'body': body, 'actor': actor, 'query': {}})
         self.assertEqual(result['status'], status, result)
         self.assertEqual(result['body']['protocol'], PROTOCOL)
         return result['body']
@@ -146,46 +148,116 @@ class CardDetails(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refused['code'], 'notes-too-long')
         self.assertEqual((await self.call(self.a, 'GET', f'{self.base}/cards/c1'))['notes'], '')
 
-    async def test_activity_author_is_stamped_by_the_host_not_the_client(self):
+    async def save_card(self, service, title, entries, status=200, actor=APP, card_id='c1'):
+        """Rename a card through a piece save that describes itself with `entries`."""
+        state = await self.call(service, 'GET', f'{self.base}/state', actor=actor)
+        card = {**state['doc']['cards'][card_id], 'title': title}
+        return await self.call(service, 'POST', f'{self.base}/changes', {'pieces': {'cards': {card_id: card}},
+            'expected_version': state['version'], 'activity': {card_id: entries}}, status, actor=actor)
+
+    async def test_activity_commits_with_the_save_it_describes(self):
+        saved = await self.save_card(self.a, 'Renamed', [entry('e1')])
+        self.assertEqual([item['id'] for item in saved['activity']['c1']], ['e1'])
+        details = await self.call(self.a, 'GET', f'{self.base}/cards/c1')
+        self.assertEqual([item['id'] for item in details['activity']], ['e1'])
+        self.assertEqual((await self.call(self.a, 'GET', f'{self.base}/state'))['doc']['cards']['c1']['title'], 'Renamed')
+
+    async def test_a_conflicting_save_records_no_activity(self):
         await self.join()
-        saved = await self.call(self.b, 'POST', f'{self.base}/cards/c1/activity',
-                                {'entries': [entry('e1', by={'host': 'forged.example', 'name': 'Someone else'})]})
-        self.assertEqual(saved['activity'][0]['by'], {'host': 'b.example', 'name': 'B'})
-        own = await self.call(self.a, 'POST', f'{self.base}/cards/c1/activity', {'entries': [entry('e2', at='2026-10-09T09:00:00Z')]})
-        self.assertEqual(own['activity'][-1]['by'], {'host': 'a.example', 'name': 'A'})
+        stale = await self.call(self.b, 'GET', f'{self.base}/state', actor=APP)
+        await self.save_card(self.a, 'First', [entry('first')])
+        card = {**stale['doc']['cards']['c1'], 'title': 'Second'}
+        conflict = await self.call(self.b, 'POST', f'{self.base}/changes', {'pieces': {'cards': {'c1': card}},
+            'expected_version': stale['version'], 'activity': {'c1': [entry('second')]}}, actor=APP)
+        self.assertEqual(conflict['status'], 'conflict')
+        self.assertEqual([item['id'] for item in (await self.call(self.a, 'GET', f'{self.base}/cards/c1'))['activity']], ['first'])
+
+    async def test_invalid_activity_refuses_the_whole_save(self):
+        refused = await self.save_card(self.a, 'Renamed', [{'id': '../bad', 'type': 'renamed'}], 400)
+        self.assertEqual(refused['code'], 'invalid-request')
+        self.assertEqual((await self.call(self.a, 'GET', f'{self.base}/state'))['doc']['cards']['c1']['title'], 'c1')
+
+    async def test_activity_can_only_describe_a_card_the_save_changes(self):
+        await self.write(self.a, board(cards=('c1', 'c2')))
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        refused = await self.call(self.a, 'POST', f'{self.base}/changes', {'pieces': {'cards': {'c1': {**state['doc']['cards']['c1'], 'title': 'x'}}},
+            'expected_version': state['version'], 'activity': {'c2': [entry('e1')]}}, 400)
+        self.assertEqual(refused['code'], 'invalid-activity')
+        # The standalone activity route is gone: history only arrives with an edit.
+        gone = await self.call(self.a, 'POST', f'{self.base}/cards/c1/activity', {'entries': [entry('e2')]}, 404)
+        self.assertEqual(gone['code'], 'route-missing')
+
+    async def test_activity_author_and_time_are_stamped_by_the_host_not_the_client(self):
+        await self.join()
+        forged = entry('e1', at='2099-01-01T00:00:00Z', by={'host': 'forged.example', 'name': 'Someone else'}, via='agent')
+        saved = await self.save_card(self.b, 'By B', [forged])
+        stamped = saved['activity']['c1'][0]
+        self.assertEqual(stamped['by'], {'host': 'b.example', 'name': 'B'})
+        self.assertNotEqual(stamped['at'], '2099-01-01T00:00:00Z')
+        self.assertNotIn('via', stamped)  # the app's own frame is a person, whatever an entry claims
+
+    async def test_agent_marker_comes_from_the_authenticated_caller(self):
+        await self.join()
+        own = await self.save_card(self.a, 'By the agent', [entry('e1')], actor=OWNER)
+        self.assertEqual(own['activity']['c1'][-1]['via'], 'agent')
+        # A member's agent: its deployment states it for the request it forwards.
+        member = await self.save_card(self.b, "By B's agent", [entry('e2')], actor=OWNER)
+        self.assertEqual(member['activity']['c1'][-1], {**member['activity']['c1'][-1], 'by': {'host': 'b.example', 'name': 'B'}, 'via': 'agent'})
+        person = await self.save_card(self.b, 'By B', [entry('e3', via='agent')], actor=APP)
+        self.assertNotIn('via', person['activity']['c1'][-1])
+
+    async def test_future_dated_entries_cannot_push_out_history(self):
+        await self.save_card(self.a, 'Early', [entry('early')])
+        await self.save_card(self.a, 'Late', [entry(f'f{i}', at='2099-01-01T00:00:00Z') for i in range(40)])
+        await self.save_card(self.a, 'Latest', [entry('latest')])
+        ids = [item['id'] for item in (await self.call(self.a, 'GET', f'{self.base}/cards/c1'))['activity']]
+        self.assertEqual((ids[0], ids[-1]), ('early', 'latest'))
 
     async def test_activity_replay_is_idempotent_and_capped(self):
-        await self.call(self.a, 'POST', f'{self.base}/cards/c1/activity', {'entries': [entry('same')]})
-        replay = await self.call(self.a, 'POST', f'{self.base}/cards/c1/activity', {'entries': [entry('same')]})
-        self.assertEqual(len(replay['activity']), 1)
+        await self.save_card(self.a, 'Once', [entry('same')])
+        replay = await self.save_card(self.a, 'Twice', [entry('same')])
+        self.assertEqual(len(replay['activity']['c1']), 1)
         for batch in range(4):
-            entries = [entry(f'b{batch}x{i}', at=f'2026-10-09T10:{batch:02d}:{i:02d}Z') for i in range(40)]
-            last = await self.call(self.a, 'POST', f'{self.base}/cards/c1/activity', {'entries': entries})
-        self.assertEqual(len(last['activity']), MAX_ACTIVITY_PER_CARD)
-        self.assertEqual(last['activity'][-1]['id'], 'b3x39')
+            last = await self.save_card(self.a, f'Batch {batch}', [entry(f'b{batch}x{i}') for i in range(40)])
+        self.assertEqual(len(last['activity']['c1']), MAX_ACTIVITY_PER_CARD)
+        self.assertEqual(last['activity']['c1'][-1]['id'], 'b3x39')
+        # Entries of one save keep the order they describe.
+        self.assertEqual([item['id'] for item in last['activity']['c1'][-3:]], ['b3x37', 'b3x38', 'b3x39'])
 
-    async def test_viewer_can_read_but_not_add_card_details(self):
+    async def test_description_save_carries_its_activity(self):
+        saved = await self.call(self.a, 'PUT', f'{self.base}/cards/c1/notes',
+                                {'notes': LONG, 'expected_version': 0, 'activity': [entry('n1', type='notes')]}, actor=APP)
+        self.assertEqual([item['type'] for item in saved['activity']], ['notes'])
+        unchanged = await self.call(self.a, 'PUT', f'{self.base}/cards/c1/notes',
+                                    {'notes': LONG, 'expected_version': saved['notes_version'], 'activity': [entry('n2', type='notes')]}, actor=APP)
+        self.assertNotIn('activity', unchanged)
+        self.assertEqual(len((await self.call(self.a, 'GET', f'{self.base}/cards/c1'))['activity']), 1)
+
+    async def test_viewer_can_read_but_not_change_card_details(self):
         await self.join('viewer')
         await self.call(self.b, 'GET', f'{self.base}/cards/c1')
-        denied = await self.call(self.b, 'POST', f'{self.base}/cards/c1/activity', {'entries': [entry('e1')]}, 403)
+        denied = await self.save_card(self.b, 'No', [entry('e1')], 403)
         self.assertEqual(denied['code'], 'read-only')
         await self.call(self.b, 'PUT', f'{self.base}/cards/c1/notes', {'notes': 'x', 'expected_version': 0}, 403)
 
-    async def test_unknown_activity_type_is_refused(self):
-        refused = await self.call(self.a, 'POST', f'{self.base}/cards/c1/activity', {'entries': [entry('e1', type='hacked')]}, 400)
-        self.assertEqual(refused['code'], 'invalid-activity')
+    async def test_activity_types_from_a_newer_kanban_are_skipped_not_refused(self):
+        saved = await self.save_card(self.a, 'Renamed', [entry('e1', type='from-the-future'), entry('e2')])
+        self.assertEqual([item['id'] for item in saved['activity']['c1']], ['e2'])
+
+    async def test_reading_a_card_takes_no_write_lock(self):
+        await self.call(self.a, 'GET', f'{self.base}/state')  # presence is fresh
+        with unittest.mock.patch.object(self.a.store, 'transaction', side_effect=AssertionError('write lock taken')):
+            await self.call(self.a, 'GET', f'{self.base}/cards/c1')
 
     async def test_deleting_a_card_removes_its_details(self):
         await self.write(self.a, board(LONG, cards=('c1', 'c2')))
-        await self.call(self.a, 'POST', f'{self.base}/cards/c1/activity', {'entries': [entry('e1')]})
+        await self.save_card(self.a, 'Renamed', [entry('e1')])
         state = await self.call(self.a, 'GET', f'{self.base}/state')
         doc = state['doc']
         del doc['cards']['c1']; doc['columns'][0]['cardIds'] = ['c2']
         await self.call(self.a, 'PUT', f'{self.base}/state', {'doc': doc, 'expected_version': state['version']})
         self.assertIsNotNone(self.a.store.get('card', f'{self.oid}/c2'))
         self.assertIsNone(self.a.store.get('card', f'{self.oid}/c1'))
-        self.assertEqual(await self.call(self.a, 'POST', f'{self.base}/cards/c1/activity', {'entries': [entry('e2')]}, 404),
-                         {'protocol': PROTOCOL, 'code': 'card-missing', 'detail': 'Card not found.'})
 
     async def test_deleting_the_board_removes_card_details(self):
         await self.write(self.a, board(LONG))

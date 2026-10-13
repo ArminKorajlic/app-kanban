@@ -1,7 +1,7 @@
 import test, { beforeEach } from 'node:test'
 import { asOlderHost } from './older-host.mjs'
 import assert from 'node:assert/strict'
-import { configureSync, pushSharedOp } from '../sync.js'
+import { applyBoardPieces, configureSync, pushSharedOp } from '../sync.js'
 import { createBoardRepository } from '../boardRepository.js'
 import { applyBoardOp } from '../operations.js'
 import { readFile } from 'node:fs/promises'
@@ -101,7 +101,12 @@ function sharedFixture({ older = false, notesRefusal = null } = {}) {
     async set() {},
     async list() { return [{ name: 'b.json' }] },
   }
-  const request = asOlderHost(async (url, options = {}) => {
+  // Like the host, it saves an edit's activity with the edit and stamps who made it.
+  const save = (entries = []) => {
+    activity.push(...entries.map(item => ({ ...item, at: '2026-10-13T08:00:00.000Z', by: { host: 'self.example', name: 'Me' } })))
+    return [...activity]
+  }
+  const host = async (url, options = {}) => {
     const method = options.method || 'GET'
     calls.push(`${method} ${url.replace('/api/apps/1/service/boards/peer.example/obj', '')}`)
     if (url.includes('/cards/') && older) {
@@ -113,11 +118,13 @@ function sharedFixture({ older = false, notesRefusal = null } = {}) {
       if (body.expected_version !== notesVersion) return Response.json({ status: 'conflict', notes, notes_version: notesVersion })
       notes = body.notes; notesVersion++; version++
       doc.cards.c1 = { ...doc.cards.c1, notes: notes.slice(0, 10) + '…', notesLength: notes.length }
-      return Response.json({ status: 'ok', notes_version: notesVersion, version, card: doc.cards.c1 })
+      return Response.json({ status: 'ok', notes_version: notesVersion, version, card: doc.cards.c1, activity: save(body.activity) })
     }
-    if (url.endsWith('/cards/c1/activity')) {
-      activity.push(...JSON.parse(options.body).entries)
-      return Response.json({ status: 'ok', activity })
+    if (url.endsWith('/changes')) {
+      const body = JSON.parse(options.body)
+      if (body.expected_version !== version) return Response.json({ status: 'conflict', doc, version })
+      doc = applyBoardPieces(doc, body.pieces); version++
+      return Response.json({ status: 'ok', version, doc, activity: body.activity ? { c1: save(body.activity.c1) } : {} })
     }
     if (url.endsWith('/cards/c1')) {
       return Response.json({ status: 'ok', notes, notes_version: notesVersion, external: Number.isInteger(doc.cards.c1?.notesLength), activity })
@@ -129,7 +136,8 @@ function sharedFixture({ older = false, notesRefusal = null } = {}) {
       return Response.json({ status: 'ok', version })
     }
     return Response.json({ doc, version })
-  })
+  }
+  const request = older ? asOlderHost(host) : host
   return { storage, request, calls, activity, notes: () => notes, doc: () => doc, setNotes: text => { notes = text } }
 }
 
@@ -146,8 +154,11 @@ test('a shared description save never resends the board and records one activity
   const saved = await createBoardRepository(f).saveNotes('b', 'c1', 'New text', { version: 3, text: f.notes() })
   assert.equal(saved.status, 'saved')
   assert.equal(f.notes(), 'New text')
-  assert.ok(!f.calls.some(call => call.startsWith('PUT /state')))
+  assert.ok(!f.calls.some(call => call.startsWith('PUT /state') || call.startsWith('POST /changes')))
+  // The line travels with the description and is saved with it, in one request.
   assert.deepEqual(f.activity.map(item => item.type), ['notes'])
+  assert.deepEqual(saved.activity.entries.map(item => item.by.host), ['self.example'])
+  assert.equal(f.calls.filter(call => call.startsWith('PUT /cards/c1/notes')).length, 1)
 })
 
 test('a description changed by someone else comes back as a conflict, not an overwrite', async () => {

@@ -1,0 +1,82 @@
+"""Turn boards stored in pieces (Kanban 0.7+) back into whole documents (0.6).
+
+An offline, administrative downgrade; never imported by a running service.
+Stop the Kanban service (or install the older version) before running it,
+and back up `collaboration.sqlite3` first.
+
+    python3 -m migration_tools.whole_boards <kanban storage dir> [--from-backup]
+
+By default every board is rebuilt from its current pieces, so edits made
+after the upgrade are kept: each long description gets its full text back
+from its card record and loses `notesLength`. `--from-backup` instead restores
+the document each board had at the moment of the upgrade (the 'board-backup'
+record), discarding later edits; use it only if the converted board itself is
+wrong. Boards created after the upgrade have no backup and are always rebuilt.
+
+Card records (full descriptions and activity) are left in place: 0.6 ignores
+them, and upgrading again reuses them. The upgrade marker is removed, so the
+next 0.7 start converts the documents again.
+"""
+import argparse
+import sys
+from pathlib import Path
+
+from collaboration.service import BOARD_PIECES, card_key
+from collaboration.store import Store
+
+
+def whole_document(store, row):
+    """The board in `row` as one document, long descriptions restored in full."""
+    oid = row['id']
+    cards = {}
+    for key, piece in store.scan('board-card', oid + '/'):
+        card_id = key.split('/', 1)[1]
+        card = dict(piece['card'])
+        if isinstance(card.pop('notesLength', None), int):
+            record = store.get('card', card_key(oid, card_id)) or {}
+            if isinstance(record.get('notes'), str):
+                card['notes'] = record['notes']
+        cards[card_id] = card
+    return {**row['meta'], 'columns': row['columns'], 'cards': cards}
+
+
+def restore_whole_boards(root, *, from_backup=False):
+    """Rewrite every board in the store at `root` as a 0.6 document. Returns the board ids."""
+    store = Store(Path(root))
+    restored = []
+    try:
+        with store.transaction():
+            for row in store.list('board'):
+                if 'doc' in row:
+                    continue
+                backup = store.get('board-backup', row['id']) if from_backup else None
+                doc = backup['doc'] if backup else whole_document(store, row)
+                for key in (*BOARD_PIECES, 'meta', 'cards_bytes', 'card_count', 'log_floor'):
+                    row.pop(key, None)
+                row['doc'] = doc
+                if backup:
+                    row['version'] = max(row['version'], backup['version']) + 1
+                store.put('board', row['id'], row)
+                store.delete_prefix('board-card', row['id'] + '/')
+                store.delete_prefix('board-change', row['id'] + '/')
+                restored.append(row['id'])
+            store.delete('schema', 'board-pieces')
+    finally:
+        store.close()
+    return restored
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    parser.add_argument('root', help="the Kanban app's storage directory (holds collaboration.sqlite3)")
+    parser.add_argument('--from-backup', action='store_true', help='restore the documents saved at the upgrade')
+    args = parser.parse_args(argv)
+    if not (Path(args.root) / 'collaboration.sqlite3').is_file():
+        parser.error('No collaboration.sqlite3 in that directory.')
+    restored = restore_whole_boards(args.root, from_backup=args.from_backup)
+    print(f'Restored {len(restored)} board(s) as whole documents.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

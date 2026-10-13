@@ -108,10 +108,11 @@ class BoardPieces(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refused['changes']['columns'], moved)
 
     async def test_a_deleted_card_arrives_as_none_and_its_details_go_with_it(self):
-        await self.call(self.a, 'POST', f'{self.base}/cards/c2/activity',
-                        {'entries': [{'id': 'e1', 'at': '2026-10-12T08:00:00Z', 'type': 'renamed', 'from': 'a', 'to': 'b'}]})
-        await self.save(self.a, {'cards': {'c2': None}, 'columns': [{'id': 'todo', 'name': 'To do', 'cardIds': ['c1']}]}, 1)
-        self.assertEqual((await self.poll(self.a, 1))['changes']['cards'], {'c2': None})
+        await self.call(self.a, 'POST', f'{self.base}/changes', {'pieces': {'cards': {'c2': self.card('c2', 'b')}}, 'expected_version': 1,
+                        'activity': {'c2': [{'id': 'e1', 'type': 'renamed', 'from': 'a', 'to': 'b'}]}})
+        self.assertIsNotNone(self.a.store.get('card', f'{self.oid}/c2'))
+        await self.save(self.a, {'cards': {'c2': None}, 'columns': [{'id': 'todo', 'name': 'To do', 'cardIds': ['c1']}]}, 2)
+        self.assertEqual((await self.poll(self.a, 2))['changes']['cards'], {'c2': None})
         self.assertIsNone(self.a.store.get('card', f'{self.oid}/c2'))
 
     async def test_an_older_kanban_whole_board_save_is_logged_as_its_changes(self):

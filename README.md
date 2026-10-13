@@ -12,7 +12,9 @@ A clean, mobile-first kanban board for Möbius.
   status control at the top of the card sheet for accessibility.
 - A card sheet with assignee, label and due-date chips, short previews of long
   notes, checklists and attachments, and an Activity history of who changed
-  what and when.
+  what and when. On a shared board an edit and its activity are saved together,
+  and the host stamps who made it, when, and whether it was their agent.
+  Deleting a card, a list or a board deletes the history kept about it.
 - Long notes and activity on shared boards are stored beside the board on its
   host, so the board document stays small; edits to the same notes are
   version-checked instead of silently overwritten.
@@ -84,6 +86,34 @@ requires a platform supporting app-owned services with explicit `service.id`
 and app-scoped identity lookup permission. Invite delivery is an unverified
 notification until explicitly redeemed against the named host. Public display
 names and claimed addresses are not authorization proofs.
+
+## Storage upgrade in 0.7
+
+Kanban 0.7 stores the boards it hosts differently from 0.6, so updating a
+hosting Kanban changes data that 0.6 cannot read:
+
+- **What changes.** The first time the 0.7 service starts, every board it hosts
+  is converted from one document into pieces (each card, the lists, the board
+  settings). A description longer than 400 characters keeps a preview on the
+  board (with `notesLength`); its full text moves into the card's record beside
+  the board, next to the card's activity. The board's version, members,
+  invitations and attachments are unchanged. All boards convert in one
+  transaction: if anything fails, nothing changes and the next start tries again.
+- **Backup.** Each board's 0.6 document is kept, unchanged, in a `board-backup`
+  record in the same database. Nothing reads it; deleting the board deletes it.
+- **Members.** Joined members on any version keep working: 0.6 members save
+  whole boards, which the host stores as the pieces they changed, and their
+  next poll receives the whole board once.
+- **Going back to 0.6.** Stop the service, copy `collaboration.sqlite3`, then run
+  `python3 -m migration_tools.whole_boards <Kanban storage directory>` from the
+  app source and install 0.6. Each board becomes one document again, with full
+  descriptions and every edit made since the upgrade. `--from-backup` instead
+  restores the documents saved at the upgrade and discards later edits; use it
+  only if a converted board itself is wrong. Activity has no place in 0.6 and
+  stays in its records, unused, until the next upgrade.
+
+The upgrade only touches boards this deployment hosts. Private boards, and the
+copies kept of boards joined elsewhere, live in app storage and are not converted.
 
 ## Existing shared boards
 

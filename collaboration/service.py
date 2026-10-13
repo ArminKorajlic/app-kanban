@@ -10,13 +10,14 @@ until the recipient chooses to redeem it against the claimed HTTPS authority.
 """
 import asyncio
 import base64
+import copy
 import hashlib
 import json
 import re
 import secrets
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote, unquote
 
 from .store import Store
@@ -52,7 +53,7 @@ MAX_ACTIVITY_PER_CARD = 100
 MAX_ACTIVITY_TEXT = 300
 MAX_ACTIVITY_APPEND = 40
 ACTIVITY_TYPES = frozenset((
-    'created', 'completed', 'renamed', 'notes', 'moved', 'label', 'due',
+    'created', 'completed', 'renamed', 'notes', 'moved', 'label', 'due', 'assigned',
     'checklist-added', 'checklist-removed', 'checklist-checked', 'checklist-unchecked', 'checklist-edited',
     'attachment-added', 'attachment-removed', 'pr-added', 'pr-removed', 'pr-changed',
 ))
@@ -66,7 +67,7 @@ PRESENCE_TTL = 12
 SEEN_REFRESH = 4
 # Operations that change nothing but presence; they skip the write lock unless
 # presence or the display name actually needs persisting.
-READ_ONLY_OPS = ('state', 'asset-read')
+READ_ONLY_OPS = ('state', 'asset-read', 'card-read')
 INVITE_TTL = 7 * 86400
 
 
@@ -102,32 +103,53 @@ def activity_time(value):
     return stamp.timestamp()
 
 
-def activity_entries(raw, actor):
-    """Validate client entries and stamp the author the host authenticated."""
-    if not isinstance(raw, list) or not raw or len(raw) > MAX_ACTIVITY_APPEND:
-        fail(400, 'invalid-activity', 'Activity must be a short, non-empty list.')
+def activity_entries(raw, actor, at):
+    """Validate a writer's description of its change; the host stamps who, when and how.
+
+    The writer only describes what changed. The author is the member the host
+    authenticated, the time is the host's clock, and `via: 'agent'` comes from
+    the authenticated request (see agent_request), never from an entry. Types
+    this host does not know come from a newer Kanban and are skipped, so a
+    member that updated first never has its edits refused.
+    """
+    if not isinstance(raw, list) or len(raw) > MAX_ACTIVITY_APPEND:
+        fail(400, 'invalid-activity', 'Activity must be a short list.')
     entries = []
     for item in raw:
-        if not isinstance(item, dict) or item.get('type') not in ACTIVITY_TYPES:
-            fail(400, 'invalid-activity', 'Unknown activity type.')
-        entry = {'id': check(item.get('id'), ACTIVITY_ID, 'activity id'), 'at': item.get('at'),
-                 'type': item['type'], 'by': {'host': actor['host'], 'name': actor.get('name') or actor['host']}}
-        activity_time(entry['at'])
+        if not isinstance(item, dict):
+            fail(400, 'invalid-activity', 'Activity entries must be objects.')
+        entry_id = check(item.get('id'), ACTIVITY_ID, 'activity id')
+        if item.get('type') not in ACTIVITY_TYPES:
+            continue
+        entry = {'id': entry_id, 'at': at, 'type': item['type'],
+                 'by': {'host': actor['host'], 'name': actor.get('name') or actor['host']}}
         for key in ('from', 'to', 'text'):
             if key in item:
                 if not isinstance(item[key], str): fail(400, 'invalid-activity', 'Activity text is invalid.')
                 entry[key] = item[key].strip()[:MAX_ACTIVITY_TEXT]
-        if item.get('via') == 'agent': entry['via'] = 'agent'
+        if actor.get('via') == 'agent': entry['via'] = 'agent'
         entries.append(entry)
     return entries
 
 
 def merge_activity(existing, incoming):
+    """Union by id, oldest first. Entries of one change share a time and keep their order."""
     merged = {}
     for entry in [*existing, *incoming]:
         merged.setdefault(entry['id'], entry)
-    ordered = sorted(merged.values(), key=lambda entry: (activity_time(entry['at']), entry['id']))
+    ordered = sorted(merged.values(), key=lambda entry: activity_time(entry['at']))
     return ordered[-MAX_ACTIVITY_PER_CARD:]
+
+
+def agent_request(actor):
+    """Whether an authenticated request on this deployment comes from an agent.
+
+    The Kanban app's own frame calls with the app's token; the agent helper
+    (scripts/kanban.mjs) and delegated helpers call with an owner or delegated
+    token. A member's deployment forwards this as `via` for its own requests;
+    the board host trusts it exactly as far as it trusts that member's `by`.
+    """
+    return actor.get('scope') == 'owner' or bool(actor.get('delegated'))
 
 
 def notes_preview(notes):
@@ -228,7 +250,14 @@ class Service:
         self.store_boards_in_pieces()
 
     def store_boards_in_pieces(self):
-        """Convert boards saved as one document (before pieces) once, on the first request after updating."""
+        """Convert boards saved as one document (Kanban 0.6 and older) once, when the service starts.
+
+        All boards convert in one transaction: a failure leaves every board as
+        it was and the next start tries again. Each board's document is kept,
+        exactly as it was, in a 'board-backup' record that nothing else reads;
+        migration_tools/whole_boards.py turns pieces back into documents for a
+        downgrade (README: "Storage upgrade in 0.7").
+        """
         if self.store.get('schema', 'board-pieces'):
             return
         with self.store.transaction():
@@ -236,7 +265,9 @@ class Service:
                 return
             for row in self.store.list('board'):
                 if 'doc' in row:
-                    self.write_board_pieces(row, row.pop('doc'))
+                    self.store.put('board-backup', row['id'], {'version': row['version'], 'doc': row['doc'],
+                        'saved_at': self.stamp()})
+                    self.write_board_pieces(row, copy.deepcopy(row.pop('doc')))
                     self.store.put('board', row['id'], row)
             self.store.put('schema', 'board-pieces', {'version': 1})
 
@@ -337,6 +368,10 @@ class Service:
 
     def close(self):
         self.store.close()
+
+    def stamp(self):
+        """The host's current time as an activity timestamp."""
+        return datetime.fromtimestamp(self.now(), timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
     def owner(self, actor, *, write=False):
         if actor.get('scope') not in ('owner', 'app') or (actor.get('scope') == 'app' and actor.get('app_id') != self.app_id):
@@ -649,13 +684,16 @@ class Service:
                 row['members'].pop(mid)
                 self.store.put('board',oid,row)
                 return {'status':'left'}
-            if op not in ('state','write','patch','asset-read','asset-write','asset-delete','card-read','notes-write','activity-append'):
+            if op not in ('state','write','patch','asset-read','asset-write','asset-delete','card-read','notes-write'):
                 fail(400,'invalid-operation','Unsupported board operation.')
-            if op in ('write','patch','asset-write','asset-delete','notes-write','activity-append') and member['role'] != 'editor':
+            if op in ('write','patch','asset-write','asset-delete','notes-write') and member['role'] != 'editor':
                 fail(403,'read-only','This board member is a viewer.')
             changes = self.presence_changes(member, self.claimed_name(body))
             member.update(changes)
-            result = self.operation(row,op,body,{'host':member['host'],'name':member.get('name')})
+            # `via` is the member deployment's statement about its own request
+            # (state_operation sets it from its authenticated caller).
+            result = self.operation(row,op,body,{'host':member['host'],'name':member.get('name'),
+                'via':'agent' if body.get('via') == 'agent' else ''})
             if changes or op not in READ_ONLY_OPS:
                 self.store.put('board',oid,row)
             return result
@@ -723,10 +761,6 @@ class Service:
             return {'status':'ok','notes':current_notes if isinstance(card,dict) else None,
                 'notes_version':record['notes_version'],'external':external,'activity':record['activity']}
         if not isinstance(card,dict): fail(404,'card-missing','Card not found.')
-        if op == 'activity-append':
-            record['activity'] = merge_activity(record['activity'], activity_entries(body.get('entries'), actor))
-            self.store.put('card',key,record)
-            return {'status':'ok','activity':record['activity']}
         notes, expected = body.get('notes'), body.get('expected_version')
         if not isinstance(notes,str): fail(400,'invalid-notes','A description must be text.')
         if type(expected) is not int or expected < 0: fail(400,'invalid-version','Expected version must be a whole number.')
@@ -738,6 +772,7 @@ class Service:
         # they stay editable as long as an edit does not make them longer.
         if len(notes) > MAX_NOTES_CHARS and len(notes) > len(current_notes):
             fail(413,'notes-too-long',f'A description can be at most {MAX_NOTES_CHARS} characters.')
+        entries = activity_entries(body.get('activity', []), actor, self.stamp())
         record['notes_version'] += 1
         if len(notes) > NOTES_PREVIEW_CHARS:
             record['notes'] = notes
@@ -746,15 +781,46 @@ class Service:
             record['notes'] = None
             card['notes'] = notes; card.pop('notesLength',None)
         self.commit_pieces(row,{'cards':{card_id:card}})
+        # The edit's activity is saved with it: both land, or neither does.
+        record['activity'] = merge_activity(record['activity'], entries)
         self.store.put('card',key,record)
-        return {'status':'ok','notes_version':record['notes_version'],'version':row['version'],'card':card}
+        return {'status':'ok','notes_version':record['notes_version'],'version':row['version'],'card':card,
+                'activity':record['activity']}
+
+    def patch_activity(self, pieces, raw, actor):
+        """Validate the activity a piece save describes, before anything is written.
+
+        `raw` maps a changed card's id to its entries. Only a card the save
+        changes and keeps can gain activity, so history only ever accompanies
+        a real edit of that card.
+        """
+        if raw is None: return {}
+        if not isinstance(raw, dict):
+            fail(400, 'invalid-activity', 'Activity must name the cards this save changes.')
+        at, entries = self.stamp(), {}
+        for card_id, items in raw.items():
+            if not isinstance(pieces['cards'].get(card_id), dict):
+                fail(400, 'invalid-activity', 'Activity must name the cards this save changes.')
+            entries[card_id] = activity_entries(items, actor, at)
+        return entries
+
+    def save_activity(self, row, entries):
+        """Merge a committed save's activity into its cards' records; returns each card's activity."""
+        saved = {}
+        for card_id, items in entries.items():
+            key = card_key(row['id'], card_id)
+            record = self.card_record(row, card_id)
+            record['activity'] = merge_activity(record['activity'], items)
+            self.store.put('card', key, record)
+            saved[card_id] = record['activity']
+        return saved
 
     def operation(self, row, op, body, actor):
         if op == 'state':
             since = body.get('since_version',-1)
             if type(since) is not int: fail(400,'invalid-version','Version must be an integer.')
             return self.state(row,since,body.get('changes') is True)
-        if op in ('card-read','notes-write','activity-append'):
+        if op in ('card-read','notes-write'):
             return self.card_operation(row,op,body,actor)
         if op == 'patch':
             # A newer Kanban sends only the pieces it changed, with the version it
@@ -765,11 +831,14 @@ class Service:
             expected = body.get('expected_version')
             if type(expected) is not int or not 0 <= expected <= row['version']:
                 fail(400,'invalid-version','Expected version must be a version of this board.')
+            entries = self.patch_activity(pieces, body.get('activity'), actor)
             if expected < row['log_floor'] or touched_pieces(pieces) & self.touched_since(row,expected):
                 return {'status':'conflict',**self.since_reply(row,expected)}
             self.settle_notes(row,pieces['cards'])
             self.commit_pieces(row,pieces)
-            return {'status':'ok',**self.since_reply(row,expected)}
+            # The save's activity commits in the same transaction as the save,
+            # so a lost reply or a retry can never leave one without the other.
+            return {'status':'ok',**self.since_reply(row,expected),'activity':self.save_activity(row,entries)}
         if op == 'write':
             # An older Kanban sends the whole board; it is saved as the pieces it changed.
             doc = board_shape(body.get('doc'))
@@ -807,19 +876,23 @@ class Service:
         self.store.put('asset',key,{'id':aid,'board_id':row['id'],'mime':mime,'data':data,'bytes':len(decoded)})
         return {'status':'ok'}
 
-    async def state_operation(self, host, oid, op, body):
+    async def state_operation(self, host, oid, op, body, *, agent=False):
+        """Run a board operation for this deployment's owner. `agent` comes from the
+        authenticated caller (agent_request), never from the request body."""
         check(host,HOST,'board host'); check(oid,ID,'board id')
+        body = {k:v for k,v in body.items() if k != 'via'}
+        actor = {'host':self.host,'name':self.owner_name,'via':'agent' if agent else ''}
         if host == self.host:
             if op in READ_ONLY_OPS:
                 with self.store.snapshot():
                     row = self.board(oid)
                     if not self.presence_changes(row['members'][self.host], self.owner_name):
-                        return self.operation(row,op,body,{'host':self.host,'name':self.owner_name})
+                        return self.operation(row,op,body,actor)
             with self.store.transaction():
                 row = self.board(oid)
                 changes = self.presence_changes(row['members'][self.host], self.owner_name)
                 row['members'][self.host].update(changes)
-                result = self.operation(row,op,body,{'host':self.host,'name':self.owner_name})
+                result = self.operation(row,op,body,actor)
                 if changes or op not in READ_ONLY_OPS:
                     self.store.put('board',oid,row)
                 return result
@@ -827,8 +900,8 @@ class Service:
         if not member or member['status']!='joined':
             fail(409,'membership-unavailable','This board has not been joined or migrated to independent Kanban.')
         try:
-            return await self.remote(host,oid,{'op':op,'member_id':member['member_id'],'credential':member['credential'],
-                'name':self.owner_name,**body})
+            return await self.remote(host,oid,{**body,'op':op,'member_id':member['member_id'],'credential':member['credential'],
+                'name':self.owner_name,**({'via':'agent'} if agent else {})})
         except Failure as error:
             if error.code == 'membership-revoked':
                 with self.store.transaction():
@@ -859,6 +932,7 @@ class Service:
                 result=self.peer(path[1],body)
             else:
                 self.owner(actor,write=method!='GET')
+                agent=agent_request(actor)
                 if not path or path[0]!='boards': fail(404,'route-missing','No such Kanban route.')
                 p=path[1:]
                 if not p and method=='POST': result=self.new_board(body)
@@ -911,6 +985,7 @@ class Service:
                         if existing and existing.get('staged'):
                             fail(409,'migration-staged','The board handoff is not active.')
                         self.store.delete('board',oid)
+                        self.store.delete('board-backup',oid)
                         for kind in ('asset','card','board-card','board-change'):
                             self.store.delete_prefix(kind,oid+'/')
                     result={'status':'deleted'}
@@ -927,15 +1002,15 @@ class Service:
                     if method=='GET':
                         try: body={'since_version':int(query_value('since_version',-1)),'changes':query_value('changes')=='1'}
                         except (ValueError,TypeError): fail(400,'invalid-version','Invalid version.')
-                    result=await self.state_operation(p[0],p[1],'state' if method=='GET' else 'write',body)
+                    result=await self.state_operation(p[0],p[1],'state' if method=='GET' else 'write',body,agent=agent)
                 elif len(p)==3 and p[2]=='changes' and method=='POST':
-                    result=await self.state_operation(p[0],p[1],'patch',body)
+                    result=await self.state_operation(p[0],p[1],'patch',body,agent=agent)
                 elif len(p)==4 and p[2]=='cards' and method=='GET':
-                    result=await self.state_operation(p[0],p[1],'card-read',{'card_id':p[3]})
-                elif len(p)==5 and p[2]=='cards' and (p[4],method) in (('notes','PUT'),('activity','POST')):
-                    result=await self.state_operation(p[0],p[1],'notes-write' if p[4]=='notes' else 'activity-append',{**body,'card_id':p[3]})
+                    result=await self.state_operation(p[0],p[1],'card-read',{'card_id':p[3]},agent=agent)
+                elif len(p)==5 and p[2]=='cards' and p[4]=='notes' and method=='PUT':
+                    result=await self.state_operation(p[0],p[1],'notes-write',{**body,'card_id':p[3]},agent=agent)
                 elif len(p)==4 and p[2]=='assets' and method in ('GET','PUT','DELETE'):
-                    result=await self.state_operation(p[0],p[1],{'GET':'asset-read','PUT':'asset-write','DELETE':'asset-delete'}[method],{**body,'asset_id':p[3]})
+                    result=await self.state_operation(p[0],p[1],{'GET':'asset-read','PUT':'asset-write','DELETE':'asset-delete'}[method],{**body,'asset_id':p[3]},agent=agent)
                 else: fail(404,'route-missing','No such Kanban route.')
             return {'status':200,'body':{'protocol':PROTOCOL,**result},'headers':{'cache-control':'no-store'}}
         except Failure as e:

@@ -1,7 +1,7 @@
 // Board authority belongs here, not to the UI or a caller's guessed file.
 // The storage adapter differs between browser and CLI; board semantics do not.
 import { boardPath, normalizeBoard, casMutate, uid } from './storage.js'
-import { pullShared, pushSharedOp, readSharedCard, writeSharedNotes, appendSharedActivity, olderHostRefused } from './sync.js'
+import { pullShared, pushSharedOp, readSharedCard, writeSharedNotes, olderHostRefused } from './sync.js'
 import { MAX_NOTES_CHARS, activityPath, cardSnapshot, createActivityEntries, describeCardChange, mergeActivity, operationCardId } from './activity.js'
 import { PUBLICATION, publicationPending } from './publication.js'
 import { applyBoardOp, completeCardNotes } from './operations.js'
@@ -15,6 +15,15 @@ function withoutNotes(op) {
   if (op.type !== 'update-card') return op
   const { notes, ...patch } = op.patch
   return Object.keys(patch).length ? { ...op, patch } : null
+}
+
+// A plain edit that sets the assignee gets one assignment event identity for
+// all of its attempts, so the card's history and its activity entry match
+// (operations.js 'update-card', activity.js describeCardChange).
+function withAssignmentEvent(op) {
+  if (op?.type !== 'update-card' || !op.patch || op.assignmentEvent) return op
+  if (!Object.hasOwn(op.patch, 'assignee') && !Object.hasOwn(op.patch, 'assigneeHost')) return op
+  return { ...op, assignmentEvent: { id: uid(), at: new Date().toISOString() } }
 }
 
 const RESERVED_IDS = new Set(['__proto__', 'prototype', 'constructor'])
@@ -129,23 +138,28 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
     }))
   }
 
-  async function mutate(boardId, op, { sharedState = null } = {}) {
+  async function mutate(boardId, requested, { sharedState = null } = {}) {
+    const op = withAssignmentEvent(requested)
     const entry = await authority(boardId)
     if (entry && entry.role !== 'editor') throw boardError('This shared board is read-only.', 'read-only')
+    const cardId = operationCardId(op)
+    const describe = drafts => createActivityEntries(drafts, { via, makeId: uid })
     // On a shared board a description is saved on its own, version-checked and
     // outside the capped document; the board operation then carries the rest.
     // `null` means the host predates card details, so the old path applies.
-    let notesChanged = false
+    // The description's activity (or a completion's) is saved with it.
+    let notesSaved = null
     let boardOp = op
     if (entry && touchesNotes(op)) {
       const current = normalizeBoard((await pullShared(entry, -1, request).catch(error => { throw finalHostRefusal(error) })).doc)
       if (!current) throw new Error('Board not found or unavailable.')
       refuseInvalidOperation(current, op)
-      const saved = await saveSharedNotesFor(entry, op)
+      const entries = describe(op.type === 'complete-card' ? [{ type: 'completed', text: op.summary }] : [{ type: 'notes' }])
+      const saved = await saveSharedNotesFor(entry, op, entries)
       if (saved !== null) {
-        notesChanged = saved
         boardOp = withoutNotes(op)
         sharedState = null
+        if (saved.changed) notesSaved = { entries, activity: saved.activity }
       }
     }
     // The last attempt's before/after snapshots describe what actually landed;
@@ -155,31 +169,52 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
       if (!entry && doc[PUBLICATION]) throw publicationPending()
       refuseInvalidOperation(doc, boardOp)
       if (boardOp.type === 'add-card' && Object.hasOwn(doc.cards, boardOp.card.id)) return doc
-      const cardId = operationCardId(boardOp)
       const before = cardSnapshot(doc, cardId)
+      const cardIds = Object.keys(doc.cards)
       const next = applyBoardOp(doc, boardOp) || doc
-      change = { cardId, before, after: cardSnapshot(next, cardId) }
+      change = { before, after: cardSnapshot(next, cardId), removed: cardIds.filter(id => !Object.hasOwn(next.cards, id)) }
       return next
+    }
+    // A completion already recorded with its description is not recorded twice.
+    const boardDrafts = () => (change && !(op.type === 'complete-card' && notesSaved)
+      ? describeCardChange({ op, before: change.before, after: change.after }) : [])
+    // A shared save sends the activity of the attempt being sent; the host
+    // commits it with the save, so an edit that landed never lacks its history.
+    let sent = null
+    const describeSave = () => {
+      sent = cardId ? describe(boardDrafts()) : []
+      return sent.length ? { [cardId]: sent } : null
     }
     let error
     const onError = cause => { error = cause }
     const landed = !boardOp
-      ? await pullShared(entry, -1, request).then(state => ({ doc: normalizeBoard(state.doc), version: state.version }))
+      ? await pullShared(entry, -1, request).then(state => ({ doc: normalizeBoard(state.doc), version: state.version, unchanged: true }))
       : entry
-        ? await pushSharedOp(entry, apply, onError, request, sharedState)
+        ? await pushSharedOp(entry, apply, onError, request, sharedState, describeSave)
         : await casMutate(boardId, apply, onError, storage).then(doc => doc && ({ doc }))
     if (!landed) throw (entry ? finalHostRefusal(error) : error) || boardError('Board no longer exists.', 'missing-board')
+    const { activity: savedActivity, unchanged, ...result } = landed
     // Only a confirmed shared write may refresh the offline copy. Cache failure
     // cannot turn a committed operation into a failed operation.
-    if (entry) await storage.set(boardPath(boardId), landed.doc).catch(() => {})
-    const cardId = operationCardId(op)
-    const drafts = [
-      ...(change ? describeCardChange({ op, before: change.before, after: change.after }) : []),
-      ...(notesChanged && op.type !== 'complete-card' ? [{ type: 'notes' }] : []),
-    ]
-    const activity = await recordActivity(boardId, entry, op, cardId, drafts)
-    return { ...landed, activity, authority: entry ? 'shared' : 'private',
+    if (entry) await storage.set(boardPath(boardId), result.doc).catch(() => {})
+    const activity = entry
+      ? sharedActivity(cardId, notesSaved, unchanged ? null : { entries: sent || [], activity: savedActivity?.[cardId] })
+      : await recordPrivateActivity(boardId, cardId, describe(boardDrafts()), change?.removed || [])
+    return { ...result, activity, authority: entry ? 'shared' : 'private',
       ...(entry ? { host: entry.host, oid: entry.oid } : {}) }
+  }
+
+  // What a shared edit's host saved: each part (`{ entries, activity }`) sent
+  // `entries` and got back the card's `activity`, or nothing from a host that
+  // predates saving activity with edits.
+  function sharedActivity(cardId, ...parts) {
+    const described = parts.filter(part => part?.entries?.length)
+    if (!cardId || !described.length) return { cardId: cardId || null, entries: [], status: 'none' }
+    const answered = described.filter(part => Array.isArray(part.activity))
+    if (answered.length < described.length) {
+      return { cardId, entries: described.flatMap(part => part.entries), status: 'unsupported' }
+    }
+    return { cardId, entries: mergeActivity(answered[0].activity, answered[1]?.activity), status: 'saved' }
   }
 
   // Saves `notes` as an edit of the text it started from: `from.version` is
@@ -189,12 +224,12 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
   // edit that landed, or a save that finished while this edit was typed), so
   // the edit applies to the new version. Any other text is someone else's
   // change and comes back as `status: 'conflict'`.
-  async function writeNotesEdit(entry, cardId, notes, from) {
+  async function writeNotesEdit(entry, cardId, notes, from, activity = []) {
     let version = from.version
     for (let attempt = 0; attempt < 4; attempt++) {
       let result
       try {
-        result = await writeSharedNotes(entry, cardId, notes, version, request)
+        result = await writeSharedNotes(entry, cardId, notes, version, request, activity)
       } catch (error) {
         throw finalHostRefusal(error)
       }
@@ -213,7 +248,11 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
   // queued edits). Otherwise an edited preview (an older Kanban's queued
   // edit, or an agent working from `read` instead of `read-card`) would
   // replace the whole description.
-  async function saveSharedNotesFor(entry, op) {
+  //
+  // Returns null when the host predates card details, else `{ changed,
+  // activity }`: whether the text changed, and the card's activity as the host
+  // saved it together with `entries` (absent from a host that does not).
+  async function saveSharedNotesFor(entry, op, entries) {
     const based = op.type === 'update-card' && Number.isInteger(op.notesVersion)
     for (let attempt = 0; attempt < 4; attempt++) {
       let card
@@ -230,42 +269,39 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
       const next = op.type === 'complete-card'
         ? completeCardNotes(card.notes, { summary: op.summary, link: op.link ?? op.prUrl ?? '' })
         : String(op.patch.notes ?? '')
-      if (next === card.notes) return false
+      const unchanged = { changed: false }
+      if (next === card.notes) return unchanged
       // The host keeps a description from growing past its limit. A completion
       // that would is still recorded: the card moves and its activity says so.
-      if (op.type === 'complete-card' && next.length > MAX_NOTES_CHARS) return false
+      if (op.type === 'complete-card' && next.length > MAX_NOTES_CHARS) return unchanged
       if (based) {
-        const result = await writeNotesEdit(entry, op.cardId, next, { version: op.notesVersion, text: op.notesBefore })
+        const result = await writeNotesEdit(entry, op.cardId, next, { version: op.notesVersion, text: op.notesBefore }, entries)
         if (result.status === 'conflict') throw boardError('Someone else changed this description first, so this edit was not saved.', 'notes-conflict')
-        return result.status !== 'unchanged'
+        return result.status === 'unchanged' ? unchanged : { changed: true, activity: result.activity }
       }
       let result
       try {
-        result = await writeSharedNotes(entry, op.cardId, next, card.notes_version, request)
+        result = await writeSharedNotes(entry, op.cardId, next, card.notes_version, request, entries)
       } catch (error) {
         throw finalHostRefusal(error)
       }
-      if (result.status !== 'conflict') return true
+      if (result.status !== 'conflict') return { changed: true, activity: result.activity }
     }
     throw boardError('The description kept changing while saving; try again.', 'notes-conflict')
   }
 
-  // Activity is a record of a committed edit, never a condition for it: a
-  // failure here is reported in the result and the edit stands.
-  async function recordActivity(boardId, entry, op, cardId, drafts) {
-    // A shared host prunes a deleted card's details itself (collaboration/service.py).
-    if (op.type === 'delete-card' && !entry && validId(op.cardId)) {
-      await Promise.resolve(storage.remove?.(activityPath(boardId, op.cardId))).catch(() => {})
-    }
-    if (!cardId || !drafts.length) return { cardId: cardId || null, entries: [], status: 'none' }
-    const entries = createActivityEntries(drafts, { via, makeId: uid })
+  // A private board's activity sits in app storage beside the board, so it is
+  // written after the edit: a failure is reported in the result (the app
+  // says so) and the edit stands. Cards the edit removed (a deleted card, or
+  // every card of a deleted list) take their history with them.
+  async function recordPrivateActivity(boardId, cardId, entries, removed) {
+    await Promise.all(removed.filter(validId).map(id =>
+      Promise.resolve(storage.remove?.(activityPath(boardId, id))).catch(() => {})))
+    if (!cardId || !entries.length) return { cardId: cardId || null, entries: [], status: 'none' }
     try {
-      const saved = entry
-        ? await appendSharedActivity(entry, cardId, entries, request)
-        : await appendPrivateActivity(boardId, cardId, entries)
-      return { cardId, entries: saved, status: 'saved' }
-    } catch (error) {
-      return { cardId, entries, status: olderHostRefused(error) ? 'unsupported' : 'failed' }
+      return { cardId, entries: await appendPrivateActivity(boardId, cardId, entries), status: 'saved' }
+    } catch {
+      return { cardId, entries, status: 'failed' }
     }
   }
 
@@ -316,17 +352,16 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
     const throughBoard = async () => ({ status: 'saved', ...(await mutate(boardId, { type: 'update-card', cardId, patch: { notes } })) })
     if (!entry || !Number.isInteger(from?.version)) return throughBoard()
     if (entry.role !== 'editor') throw boardError('This shared board is read-only.', 'read-only')
+    const entries = createActivityEntries([{ type: 'notes' }], { via, makeId: uid })
     let result
     try {
-      result = await writeNotesEdit(entry, cardId, notes, from)
+      result = await writeNotesEdit(entry, cardId, notes, from, entries)
     } catch (error) {
       if (olderHostRefused(error)) return throughBoard()
       throw error
     }
     if (result.status === 'conflict') return { status: 'conflict', notes: result.notes, notesVersion: result.notes_version }
-    const activity = result.status === 'unchanged'
-      ? { cardId, entries: [], status: 'none' }
-      : await recordActivity(boardId, entry, { type: 'update-card', cardId }, cardId, [{ type: 'notes' }])
+    const activity = sharedActivity(cardId, result.status === 'unchanged' ? null : { entries, activity: result.activity })
     return { status: 'saved', card: result.card, notesVersion: result.notes_version, version: result.version, activity }
   }
   return { list, read, mutate, readCard, saveNotes }

@@ -458,20 +458,15 @@ export async function readSharedCard(entry, cardId, request = fetch) {
   return _json(await request(cardUrl(entry, cardId), { headers: _auth }))
 }
 
-// `{status: 'ok', notes_version, version, card}` or `{status: 'conflict', notes, notes_version}`.
-export async function writeSharedNotes(entry, cardId, notes, expectedVersion, request = fetch) {
+// `{status: 'ok', notes_version, version, card, activity}` or `{status: 'conflict', notes, notes_version}`.
+// `activity` describes the edit; the host saves it with the text, in one
+// transaction, and answers with the card's activity.
+export async function writeSharedNotes(entry, cardId, notes, expectedVersion, request = fetch, activity = []) {
   independent(entry)
   return _json(await request(`${cardUrl(entry, cardId)}/notes`, {
-    method: 'PUT', headers: _auth, body: JSON.stringify({ notes, expected_version: expectedVersion }),
+    method: 'PUT', headers: _auth, body: JSON.stringify({ notes, expected_version: expectedVersion,
+      ...(activity.length ? { activity } : {}) }),
   }))
-}
-
-export async function appendSharedActivity(entry, cardId, entries, request = fetch) {
-  independent(entry)
-  const result = await _json(await request(`${cardUrl(entry, cardId)}/activity`, {
-    method: 'POST', headers: _auth, body: JSON.stringify({ entries }),
-  }))
-  return Array.isArray(result.activity) ? result.activity : []
 }
 
 // A host running an older Kanban answers a route or operation it lacks this way.
@@ -590,9 +585,10 @@ export function rememberSharedState(previous, entry, state) {
     doc: normalizeBoard(structuredClone(state.doc)) }
 }
 
-async function savePieces(entry, pieces, expectedVersion, request) {
+async function savePieces(entry, pieces, expectedVersion, request, activity) {
   return _json(await request(`${API}/${encodeURIComponent(entry.host)}/${entry.oid}/changes`, {
-    method: 'POST', headers: _auth, body: JSON.stringify({ pieces, expected_version: expectedVersion }),
+    method: 'POST', headers: _auth, body: JSON.stringify({ pieces, expected_version: expectedVersion,
+      ...(activity ? { activity } : {}) }),
   }))
 }
 
@@ -606,7 +602,12 @@ async function saveWholeBoard(entry, doc, expectedVersion, request) {
 // Only the pieces `op` changed are sent; the host refuses them only when
 // someone else changed one of the same pieces, and its reply brings this copy
 // up to date either way.
-export async function pushSharedOp(entry, op, onError, request = fetch, confirmed = null) {
+//
+// `describe()`, called after each attempt's `op`, returns that attempt's
+// activity ({cardId: entries}) or null. It is sent with the pieces and the
+// host commits both together; the landed result's `activity` is the host's
+// answer ({cardId: card activity}), absent when no activity was saved.
+export async function pushSharedOp(entry, op, onError, request = fetch, confirmed = null, describe = null) {
   try { independent(entry) } catch (error) { onError?.(error); return null }
   // This is a version-bound hint, never the optimistic UI or an offline copy.
   // The host still authorizes and CAS-checks every write.
@@ -632,12 +633,13 @@ export async function pushSharedOp(entry, op, onError, request = fetch, confirme
       }
       hinted = false
       const pieces = changedPieces(base, next)
-      if (!hasPieces(pieces)) return { doc: next, version: state.version }
+      if (!hasPieces(pieces)) return { doc: next, version: state.version, unchanged: true }
       const known = { version: state.version, doc: base }
       let res
+      const activity = describe?.() || null
       if (!wholeBoardHosts.has(entry.host)) {
         try {
-          res = await savePieces(entry, pieces, state.version, request)
+          res = await savePieces(entry, pieces, state.version, request, activity)
         } catch (error) {
           if (!olderHostRefused(error)) throw error
           wholeBoardHosts.add(entry.host)
@@ -658,7 +660,8 @@ export async function pushSharedOp(entry, op, onError, request = fetch, confirme
         continue
       }
       const landed = adopted || { version: res.version, doc: next }
-      return { doc: normalizeBoard(structuredClone(landed.doc)), version: landed.version }
+      return { doc: normalizeBoard(structuredClone(landed.doc)), version: landed.version,
+        ...(res.activity && typeof res.activity === 'object' ? { activity: res.activity } : {}) }
     } catch (e) {
       onError?.(e)
       return null

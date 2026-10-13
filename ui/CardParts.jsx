@@ -6,7 +6,6 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { createPortal } from 'react-dom'
 import { Calendar, Check, ChevronDown, ChevronLeft, DotsHorizontal, Paperclip, Pencil, Plus, PullRequestClosed, PullRequestDraft, PullRequestMerged, PullRequestOpen, Reload, Trash } from '@openai/apps-sdk-ui/components/Icon'
 import { useModalFocus } from './modalFocus.js'
-import { describeActivity } from '../activity.js'
 import { describeAssignmentEvent, restorableAssignment } from '../assignment.js'
 import { isPreviewImage, loadCardAttachment, MAX_CARD_ATTACHMENTS } from '../attachments.js'
 import { checklistProgress, dueDateStatus, formatDueDate, labelDisplayName, labelsInOrder, MAX_LABEL_NAME_CHARS, shortLinkText } from '../domain.js'
@@ -822,24 +821,6 @@ export function formatActivityTime(iso, now = new Date()) {
 
 const lowerFirst = text => text ? text.charAt(0).toLocaleLowerCase() + text.slice(1) : text
 
-// One timeline: the card's activity (kept beside the board) plus its
-// assignment history (kept on the card) and assignment changes this device
-// noticed from apps that record no history. Newest first.
-export function cardTimeline({ card, activity, assignmentTimeline, actorName }) {
-  const changes = (activity || []).map(entry => {
-    const actor = actorName(entry)
-    return { key: `a-${entry.id}`, at: entry.at, actor, text: describeActivity(entry), kind: 'change' }
-  })
-  const assignments = (assignmentTimeline || []).map((event, index) => ({
-    key: `${event.observed ? 'seen' : 'assign'}-${event.id}`,
-    at: event.at,
-    event,
-    first: index === 0,
-    kind: event.observed ? 'observed' : 'assignment',
-  }))
-  return [...changes, ...assignments].sort((left, right) => Date.parse(right.at) - Date.parse(left.at))
-}
-
 export function CardActivity({ card, timeline, status, canWrite, nameFor, onRestore }) {
   const [open, setOpen] = useState(false)
   useEffect(() => { setOpen(false) }, [card.id])
@@ -861,7 +842,7 @@ export function CardActivity({ card, timeline, status, canWrite, nameFor, onRest
       {timeline.map(item => <li key={item.key} className={`kb-activity-item is-${item.kind}`}>
         <span className="kb-activity-dot" aria-hidden="true" />
         <div className="kb-activity-copy">
-          {item.event
+          {item.text === undefined
             ? <span>{describeAssignmentEvent(item.event, nameFor)}</span>
             : <span><strong>{item.actor}</strong> {item.text}</span>}
           <small>

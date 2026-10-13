@@ -26,7 +26,7 @@ uses the current turn's credentials internally; never print them.
    from the `read-card` text and send that `notesVersion` with `update-card`;
    an edit without it, or after someone else changed the text, is refused so
    a preview never replaces the full description. Edits made through this
-   helper are recorded as the agent's.
+   helper, including assignee changes, are recorded as the agent's.
 3. Choose the intended board/column from those results, not guessed filenames.
    If several boards genuinely match, ask rather than silently picking the first.
 4. Send one operation as JSON on stdin. Generate arbitrary text with a JSON

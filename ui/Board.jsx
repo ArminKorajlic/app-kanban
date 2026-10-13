@@ -17,7 +17,7 @@ import {
 import { loadMemberAvatar, resolveMemberHandles, pullShared, createInvite, inviteByHandle, getMembers, revokeCollaborator, groupCollaborators, collaboratorForHost, selfCollaborator, inviteDeliveryNotice, shareBoard, cacheSubscriptionIsAuthoritative, rememberSharedState, sharedBoardPollDelay, acceptSharedPoll, createSharedRefreshLifecycle, notifyOwner } from '../sync.js'
 import { alertCapacity, formatBytes } from '../capacityAlerts.js'
 import { applyBoardOp, columnMoveAnchor, cardPullUrls, hasExternalNotes } from '../operations.js'
-import { mergeActivity, MAX_NOTES_CHARS } from '../activity.js'
+import { cardTimeline, mergeActivity, MAX_NOTES_CHARS } from '../activity.js'
 import { parsePullRequestUrl, pullRequestStatus } from '../prMatching.js'
 import { acknowledgeRecoveredBoardOps, applyPendingBoardOps, enqueuePendingBoardOp, readPendingBoardOps, readRecoveredBoardOps, exportUnsyncedBoardOps, replayPendingBoardOps, hasRecoverableBoardOps } from '../pendingOps.js'
 import { createBoardRepository, isRetryableBoardError, replayOutcomeForBoardError } from '../boardRepository.js'
@@ -31,7 +31,7 @@ import {
 import { useModalFocus } from './modalFocus.js'
 import { appVisible, onAppVisibilityChange } from '../visibility.js'
 import {
-  AttachmentImage, AttachmentsSection, CardActivity, cardTimeline, CardTileAttachment, ChecklistSection, DescriptionSection, DueChip, dueTone,
+  AttachmentImage, AttachmentsSection, CardActivity, CardTileAttachment, ChecklistSection, DescriptionSection, DueChip, dueTone,
   InlineCardText, LabelChip, LinkifiedText, MenuButton, pressedOutside, PullRequestSection, SavedIndicator, StatusPill,
 } from './CardParts.jsx'
 import {
@@ -97,16 +97,16 @@ function Card({ boardId, share, card, labelNames, mine, changed, assigneeLabel, 
       {notePreview && <div className="kb-card-notes">{notePreview}</div>}
       <CardTileAttachment boardId={boardId} share={share} attachments={attachments} />
       {hasDetails && <div className="kb-card-meta">
-        {labelled && <span className="kb-card-label" style={{ '--kb-lc': LABELS[card.label] }} title={labelDisplayName(card.label, labelNames)}
+        {labelled && <span className="kb-card-label" role="img" style={{ '--kb-lc': LABELS[card.label] }} title={labelDisplayName(card.label, labelNames)}
           aria-label={`Label: ${labelDisplayName(card.label, labelNames)}`}>{labelNames?.[card.label] || ''}</span>}
         {dueStatus && <span className={`kb-due kb-due-${dueStatus} kb-due-tone-${dueTone(card.due)}`}>{formatDueDate(card.due)}</span>}
-        {progress.total > 0 && <span className={`kb-card-count${progress.done === progress.total ? ' is-complete' : ''}`} aria-label={`Checklist: ${progress.done} of ${progress.total} done`}>
+        {progress.total > 0 && <span className={`kb-card-count${progress.done === progress.total ? ' is-complete' : ''}`} role="img" aria-label={`Checklist: ${progress.done} of ${progress.total} done`}>
           <SquareCheckCheckboxChecked aria-hidden="true" />{progress.done}/{progress.total}
         </span>}
-        {pullCount > 0 && <span className="kb-card-count" aria-label={`${pullCount} pull request${pullCount === 1 ? '' : 's'}`}>
+        {pullCount > 0 && <span className="kb-card-count" role="img" aria-label={`${pullCount} pull request${pullCount === 1 ? '' : 's'}`}>
           <PullRequestOpen aria-hidden="true" />{pullCount}
         </span>}
-        {attachments.length > 0 && <span className="kb-card-count" aria-label={`${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`}>
+        {attachments.length > 0 && <span className="kb-card-count" role="img" aria-label={`${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`}>
           <Paperclip aria-hidden="true" />{attachments.length}
         </span>}
         <span className="kb-card-meta-spacer" />
@@ -802,11 +802,16 @@ export default memo(function Board({
     else if (detailsCacheRef.current.has(cardId)) detailsCacheRef.current.set(cardId, change(detailsCacheRef.current.get(cardId)))
   }
   // A committed edit's activity joins the open card's timeline without a re-read.
+  // A private board writes it after the edit; if that fails the edit stands,
+  // and the owner is told rather than left with a silently incomplete history.
   const noteActivity = result => {
     if (result?.status === 'saved' && result.cardId && result.entries?.length) {
       updateDetails(result.cardId, details => ({ ...details, activity: mergeActivity(details.activity, result.entries) }))
     } else if (result?.status === 'unsupported' && result.cardId) {
       updateDetails(result.cardId, details => ({ ...details, status: 'unsupported' }))
+    } else if (result?.status === 'failed') {
+      setSyncNote('Saved, but this change couldn’t be added to the card’s activity')
+      window.mobius?.signal?.('error', { message: 'Card activity could not be saved.', source: 'activity' })
     }
   }
 
@@ -1474,6 +1479,7 @@ export default memo(function Board({
             try {
               const landed = await createBoardRepository({ storage: window.mobius.storage }).mutate(boardId, op, { sharedState: confirmedSharedRef.current })
               if (landed.authority === 'shared') confirmedSharedRef.current = rememberSharedState(confirmedSharedRef.current, shareRef.current, landed)
+              noteActivity(landed.activity)
               return { status: 'landed', doc: landed.doc }
             } catch (error) {
               window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'offline-replay' })

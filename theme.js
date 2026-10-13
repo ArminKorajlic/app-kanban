@@ -367,7 +367,8 @@ export const CSS = `
   .kb-due { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 3px 7px; }
   .kb-due-overdue { color: var(--kb-danger); background: color-mix(in srgb, #ef4444 13%, transparent); }
   .kb-due-today { color: var(--kb-warning); background: color-mix(in srgb, #f59e0b 14%, transparent); }
-  .kb-due-upcoming { color: var(--muted); background: var(--surface-2); }
+  /* Muted text on --surface-2 sits just under 4.5:1 in the light palette; a step toward --text clears it in both. */
+  .kb-due-upcoming { color: color-mix(in srgb, var(--muted) 80%, var(--text)); background: var(--surface-2); }
   .kb-card.kb-lifted { opacity: 0.35; }
   .kb-ghost {
     position: fixed;

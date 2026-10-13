@@ -2,7 +2,7 @@
 // lets local-offline edits survive a reload and be replayed against a fresh CAS
 // base instead of trusting the runtime's blind offline write queue.
 import { parsePullRequestUrl } from './prMatching.js'
-import { applyAssignment } from './assignment.js'
+import { applyAssignment, cardAssignment, sameAssignment } from './assignment.js'
 import { COLUMN_COLOR_KEYS, isDoneColumn, MAX_LABEL_NAME_CHARS, normalizeLabelNames } from './domain.js'
 
 function insertBefore(ids, itemId, beforeId) {
@@ -62,8 +62,17 @@ export function applyBoardOp(board, op) {
       const card = board.cards[op.cardId]
       if (card && op.patch && typeof op.patch === 'object') {
         const previousUrls = cardPullUrls(card)
+        const previousAssignment = cardAssignment(card)
         const { notes, notesLength, ...rest } = op.patch
         Object.assign(card, hasExternalNotes(card) ? rest : { ...rest, ...(notes === undefined ? {} : { notes }) })
+        // An assignee set through a plain edit (the agent helper) joins the
+        // card's assignment history like one made in the app; `assignmentEvent`
+        // ({ id, at }) is minted once per edit (boardRepository.mutate).
+        const assignment = cardAssignment(card)
+        if (op.assignmentEvent && !sameAssignment(previousAssignment, assignment)) {
+          applyAssignment(card, { assignee: assignment.label, assigneeHost: assignment.host,
+            event: { ...op.assignmentEvent, from: previousAssignment, to: assignment } })
+        }
         if (Array.isArray(op.patch.pullRequestUrls)) {
           card.pullRequestUrls = cardPullUrls({ pullRequestUrls: op.patch.pullRequestUrls })
           card.pullRequestUrl = card.pullRequestUrls[0] || ''

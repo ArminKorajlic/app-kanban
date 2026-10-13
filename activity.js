@@ -2,14 +2,19 @@
 //
 // Activity deliberately lives outside the board document, which a shared
 // board's host caps and a new member downloads whole, so per-card history is
-// kept beside the board: on the hosting Kanban service for
-// shared boards (one record per card, author stamped by the host) and in app
-// storage for private boards. Assignment history predates this and stays on
-// the card; the card sheet shows both in one timeline.
+// kept beside the board: on the hosting Kanban service for shared boards (one
+// record per card) and in app storage for private boards.
+//
+// On a shared board an edit carries its entries and the host saves both in
+// one transaction, stamping the author, the time and whether an agent made it
+// (collaboration/service.py); the entries only describe what changed. Every
+// assignee change is recorded here too, with the id of the assignment event it
+// matches on the card, so the card sheet shows one timeline (cardTimeline).
 //
 // Entries are derived by comparing a card before and after an operation, so
 // replaying an operation that already landed records nothing.
 import { cardPullUrls } from './operations.js'
+import { assignmentHistory, cardAssignment, sameAssignment } from './assignment.js'
 
 export const MAX_ACTIVITY_PER_CARD = 100
 export const MAX_ACTIVITY_TEXT = 300
@@ -22,7 +27,7 @@ export const MAX_NOTES_CHARS = 16000
 // Keep in step with ACTIVITY_TYPES in collaboration/service.py: the host
 // rejects types it does not know.
 export const ACTIVITY_TYPES = [
-  'created', 'completed', 'renamed', 'notes', 'moved', 'label', 'due',
+  'created', 'completed', 'renamed', 'notes', 'moved', 'label', 'due', 'assigned',
   'checklist-added', 'checklist-removed', 'checklist-checked', 'checklist-unchecked', 'checklist-edited',
   'attachment-added', 'attachment-removed', 'pr-added', 'pr-removed', 'pr-changed',
 ]
@@ -52,6 +57,15 @@ export function describeCardChange({ op, before, after }) {
   const labelOf = card => (card.label && card.label !== 'none' ? card.label : '')
   if (labelOf(a) !== labelOf(b)) drafts.push({ type: 'label', from: labelOf(a), to: labelOf(b) })
   if (text(a.due) !== text(b.due)) drafts.push({ type: 'due', from: text(a.due), to: text(b.due) })
+  const fromPerson = cardAssignment(a)
+  const toPerson = cardAssignment(b)
+  if (!sameAssignment(fromPerson, toPerson)) {
+    // The assignment event this change added to the card, when it added one.
+    const known = new Set(assignmentHistory(a).map(event => event.id))
+    const event = assignmentHistory(b).find(item => !known.has(item.id))
+    drafts.push({ type: 'assigned', from: clip(fromPerson.label || fromPerson.host), to: clip(toPerson.label || toPerson.host),
+      ...(event && ID.test(event.id) ? { id: event.id } : {}) })
+  }
 
   const oldItems = byId(a.checklist)
   const newItems = byId(b.checklist)
@@ -94,8 +108,9 @@ export function operationCardId(op) {
   return op?.type === 'add-card' ? op.card?.id : op?.cardId
 }
 
+// `at` and `via` only matter on a private board: a shared board's host stamps its own.
 export function createActivityEntries(drafts, { at = new Date().toISOString(), via = '', makeId }) {
-  return drafts.map(draft => normalizeActivityEntry({ ...draft, id: makeId(), at, ...(via ? { via } : {}) })).filter(Boolean)
+  return drafts.map(draft => normalizeActivityEntry({ ...draft, id: draft.id || makeId(), at, ...(via ? { via } : {}) })).filter(Boolean)
 }
 
 export function normalizeActivityEntry(entry) {
@@ -112,7 +127,8 @@ export function normalizeActivityEntry(entry) {
   return normalized
 }
 
-// Union by id, oldest first, keeping the newest MAX_ACTIVITY_PER_CARD.
+// Union by id, oldest first, keeping the newest MAX_ACTIVITY_PER_CARD. The
+// entries of one change share a time and keep the order they were described in.
 export function mergeActivity(existing, incoming, limit = MAX_ACTIVITY_PER_CARD) {
   const merged = new Map()
   for (const entry of [...(Array.isArray(existing) ? existing : []), ...(Array.isArray(incoming) ? incoming : [])]) {
@@ -120,7 +136,7 @@ export function mergeActivity(existing, incoming, limit = MAX_ACTIVITY_PER_CARD)
     if (normalized && !merged.has(normalized.id)) merged.set(normalized.id, normalized)
   }
   return [...merged.values()]
-    .sort((left, right) => Date.parse(left.at) - Date.parse(right.at) || left.id.localeCompare(right.id))
+    .sort((left, right) => Date.parse(left.at) - Date.parse(right.at))
     .slice(-limit)
 }
 
@@ -149,6 +165,9 @@ export function describeActivity(entry) {
     case 'moved': return `moved this card from ${entry.from || 'another list'} to ${entry.to || 'another list'}`
     case 'label': return entry.to ? `set the label to ${capitalize(entry.to)}` : 'removed the label'
     case 'due': return entry.to ? `set the due date to ${shortDate(entry.to)}` : 'cleared the due date'
+    case 'assigned':
+      if (!entry.from) return entry.to ? `assigned this card to ${entry.to}` : 'changed the assignee'
+      return entry.to ? `reassigned this card from ${entry.from} to ${entry.to}` : `removed ${entry.from} from this card`
     case 'checklist-added': return `added ${quote(entry.text)} to the checklist`
     case 'checklist-removed': return `removed ${quote(entry.text)} from the checklist`
     case 'checklist-checked': return `checked ${quote(entry.text)}`
@@ -163,5 +182,31 @@ export function describeActivity(entry) {
   }
 }
 
-export const activityPath = (boardId, cardId) =>
-  `activity/${encodeURIComponent(String(boardId))}/${encodeURIComponent(String(cardId))}.json`
+export const activityPrefix = boardId => `activity/${encodeURIComponent(String(boardId))}/`
+export const activityPath = (boardId, cardId) => `${activityPrefix(boardId)}${encodeURIComponent(String(cardId))}.json`
+
+// One timeline: the card's activity (kept beside the board) plus its
+// assignment history (kept on the card) and assignment changes this device
+// noticed from apps that record no history. Newest first.
+//
+// An assignment recorded in activity carries its event's id: that line shows
+// the author and time the host stamped, and keeps the event for "Restore".
+// Only events without such a line (older Kanbans) speak for themselves.
+export function cardTimeline({ card, activity, assignmentTimeline, actorName }) {
+  const events = new Map((assignmentTimeline || []).filter(event => !event.observed).map(event => [event.id, event]))
+  const changes = (activity || []).map(entry => {
+    const actor = actorName(entry)
+    const event = entry.type === 'assigned' ? events.get(entry.id) : undefined
+    return { key: `a-${entry.id}`, at: entry.at, actor, text: describeActivity(entry),
+      kind: event ? 'assignment' : 'change', ...(event ? { event } : {}) }
+  })
+  const recorded = new Set(changes.filter(item => item.event).map(item => item.event.id))
+  const assignments = (assignmentTimeline || []).filter(event => event.observed || !recorded.has(event.id)).map((event, index) => ({
+    key: `${event.observed ? 'seen' : 'assign'}-${event.id}`,
+    at: event.at,
+    event,
+    first: index === 0,
+    kind: event.observed ? 'observed' : 'assignment',
+  }))
+  return [...changes, ...assignments].sort((left, right) => Date.parse(right.at) - Date.parse(left.at))
+}
