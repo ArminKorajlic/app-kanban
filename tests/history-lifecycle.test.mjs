@@ -173,7 +173,7 @@ test('a removed attachment’s file is deleted with the edit, also when a queued
   const { storage, files } = privateBoard([{ id: 'todo', name: 'To do', cardIds: ['c1'] }])
   const path = attachmentPath('b', 'f-c1', 'image/png')
   // The app queues the edit while offline; the replay runs the same repository edit.
-  await createBoardRepository({ storage }).mutate('b', { type: 'update-card', cardId: 'c1', patch: { attachments: [] } })
+  await createBoardRepository({ storage }).mutate('b', { type: 'remove-file', cardId: 'c1', attachmentId: 'f-c1' })
   assert.equal(files[path], undefined)
   // A path outside this board's files is never deleted, whatever a card claims.
   files[boardPath('b')].cards.c1.attachments = [{ id: 'x', name: 'x', mime: 'image/png', path: 'ui.json' }]
@@ -194,9 +194,63 @@ test('a shared host that deletes files itself is not asked again; an older host 
       return host.request(url, options)
     }
     configureSync('fixture', 1)
-    await createBoardRepository({ ...host, request }).mutate('b', { type: 'update-card', cardId: 'c1', patch: { attachments: [] } })
+    await createBoardRepository({ ...host, request }).mutate('b', { type: 'remove-file', cardId: 'c1', attachmentId: 'f1' })
     assert.deepEqual(deleted, older ? ['f1'] : [], older ? 'older host' : 'current host')
   }
+})
+
+const file = id => ({ id, name: `${id}.png`, mime: 'image/png' })
+
+test('two members changing a card’s files at once both keep their change, and no file is deleted by mistake', async () => {
+  const host = sharedHost()
+  host.doc().cards.c1.attachments = [file('A')]
+  const deleted = []
+  const request = (url, options = {}) => {
+    if (url.includes('/assets/') && options.method === 'DELETE') { deleted.push(url.split('/').pop()); return Response.json({ status: 'deleted' }) }
+    return host.request(url, options)
+  }
+  const repo = createBoardRepository({ ...host, request })
+  // This member read the card while it held only A.
+  const stale = { host: entry.host, oid: entry.oid, version: 1, doc: structuredClone(host.doc()) }
+  // Meanwhile another member attached C (the host is now one version ahead).
+  await createBoardRepository(host).mutate('b', { type: 'attach-file', cardId: 'c1', attachment: file('C') })
+  // Adding B from the stale copy conflicts, is applied again to the fresh card, and keeps C.
+  await repo.mutate('b', { type: 'attach-file', cardId: 'c1', attachment: file('B') }, { sharedState: stale })
+  assert.deepEqual(host.doc().cards.c1.attachments.map(item => item.id), ['A', 'C', 'B'])
+  // Removing A from a stale copy removes only A.
+  await repo.mutate('b', { type: 'remove-file', cardId: 'c1', attachmentId: 'A' }, { sharedState: stale })
+  assert.deepEqual(host.doc().cards.c1.attachments.map(item => item.id), ['C', 'B'])
+  // A whole list written from an old view (a queued edit from an earlier
+  // build) can add files but never removes one.
+  await repo.mutate('b', { type: 'update-card', cardId: 'c1', patch: { attachments: [file('A')] } })
+  assert.deepEqual(host.doc().cards.c1.attachments.map(item => item.id), ['C', 'B', 'A'])
+  assert.deepEqual(deleted, [])
+})
+
+test('an upload whose card edit is refused for good is deleted; one waiting for a retry is kept', async () => {
+  const { storage, files } = privateBoard([{ id: 'todo', name: 'To do', cardIds: ['c1'] }])
+  const path = attachmentPath('b', 'up1', 'image/png')
+  files[path] = 'blob'
+  const upload = { ...file('up1'), path }
+  await assert.rejects(createBoardRepository({ storage }).mutate('b', { type: 'attach-file', cardId: 'gone', attachment: upload }),
+    error => error.code === 'missing-card')
+  assert.equal(files[path], undefined)
+  // A full card refuses another file, and that upload goes too.
+  files[path] = 'blob'
+  files[boardPath('b')].cards.c1.attachments = Array.from({ length: 8 }, (_, i) => file(`x${i}`))
+  await assert.rejects(createBoardRepository({ storage }).mutate('b', { type: 'attach-file', cardId: 'c1', attachment: upload }),
+    error => error.code === 'too-many-attachments')
+  assert.equal(files[path], undefined)
+  // An unreachable shared host keeps the upload for the queued retry.
+  const host = sharedHost()
+  const deleted = []
+  const offline = (url, options = {}) => {
+    if (url.includes('/assets/') && options.method === 'DELETE') { deleted.push(url); return Response.json({}) }
+    if (url.endsWith('/changes')) throw new TypeError('network connection lost')
+    return host.request(url, options)
+  }
+  await assert.rejects(createBoardRepository({ ...host, request: offline }).mutate('b', { type: 'attach-file', cardId: 'c1', attachment: file('up2') }))
+  assert.deepEqual(deleted, [])
 })
 
 test('deleting a board deletes everything kept about it, and nothing about other boards', async () => {

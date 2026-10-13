@@ -1713,8 +1713,7 @@ export default memo(function Board({
           id: uid(),
           file,
         })
-        const current = boardRef.current?.cards[cardId]?.attachments || []
-        if (!mutate({ type: 'update-card', cardId, patch: { attachments: [...current, attachment] } })) {
+        if (!mutate({ type: 'attach-file', cardId, attachment })) {
           await deleteCardAttachment({ share: shareRef.current, attachment }).catch(() => {})
           throw new Error('This card cannot be changed right now.')
         }
@@ -1742,8 +1741,7 @@ export default memo(function Board({
 
   // The file itself is deleted with the edit that removes it (boardRepository.mutate).
   const removeAttachment = (cardId, attachment) => {
-    const attachments = (boardRef.current?.cards[cardId]?.attachments || []).filter(item => item.id !== attachment.id)
-    mutate({ type: 'update-card', cardId, patch: { attachments } })
+    mutate({ type: 'remove-file', cardId, attachmentId: attachment.id })
   }
 
   const downloadAttachment = async attachment => {

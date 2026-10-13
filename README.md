@@ -15,9 +15,14 @@ A clean, mobile-first kanban board for Möbius.
   what and when. On a shared board an edit and its activity are saved together,
   and the host stamps who made it, when, and whether it was their agent; it
   keeps only entries that match what the edit changed, and writes titles, lists,
-  labels, due dates and assignees from the card itself.
+  labels, due dates and assignees from the card itself. A description save
+  records only that the description changed, or a completion whose line it adds.
 - Deleting a card or a list deletes its files and activity; removing a file from
-  a card deletes the file. Deleting a board deletes everything kept about it:
+  a card deletes the file. Files are added and removed one at a time, by name,
+  against the card as it is when the edit lands, so two people changing a
+  card's files at once both keep their change; an older or stale copy of a
+  card's file list can add files but never removes one, and a file another
+  card still attaches is never deleted. Deleting a board deletes everything kept about it:
   its files and activity, edits still queued for it or kept for recovery,
   noticed assignment changes, capacity alerts and per-board view choices.
 - Long notes and activity on shared boards are stored beside the board on its
@@ -105,8 +110,8 @@ hosting Kanban changes data that 0.6 cannot read:
   invitations and attachments are unchanged. All boards convert in one
   transaction: if anything fails, nothing changes and the next start tries again.
 - **Backup.** Each board's 0.6 document is kept, unchanged, in a `board-backup`
-  record in the same database, for **30 days**, then deleted automatically when
-  the service starts. Nothing reads it. It still holds anything deleted from the
+  record in the same database, for **30 days**, then deleted automatically by
+  the first request that arrives after that. Nothing reads it. It still holds anything deleted from the
   board since the upgrade (cards, descriptions, the names of removed files), and
   takes up to 256 KB per board (the 0.6 limit) outside the board's own limit.
   Deleting the board deletes it at once, and
@@ -120,7 +125,11 @@ hosting Kanban changes data that 0.6 cannot read:
   app source and install 0.6. Each board becomes one document again, with full
   descriptions and every edit made since the upgrade. `--from-backup` instead
   restores the documents saved at the upgrade and discards later edits; use it
-  only if a converted board itself is wrong (and within the 30 days). Activity
+  only if a converted board itself is wrong, and within the 30 days: a board
+  whose backup is gone (expired, or created after the upgrade) is rebuilt from
+  its current state instead, and the tool prints a warning naming it. A
+  restored board may still name files deleted since the upgrade; they show as
+  unavailable. Activity
   has no place in 0.6 and stays in its records, unused, until the next upgrade.
 - **Pre-release builds.** A Kanban built from this change before 0.7.0 saved
   activity through a separate request that 0.7 no longer has; until it updates,

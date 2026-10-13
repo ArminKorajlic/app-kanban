@@ -185,6 +185,14 @@ class StorageUpgrade(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.rows('board-backup'), {})
         self.assertEqual(self.rows('board'), boards)
 
+    async def test_restoring_from_an_expired_backup_rebuilds_and_says_so(self):
+        self.start().close()
+        drop_backups(self.root)
+        rebuilt = []
+        restore_whole_boards(self.root, from_backup=True, rebuilt=rebuilt)
+        self.assertEqual(rebuilt, [OID])
+        self.assertIn('doc', self.rows('board')[OID])
+
     async def test_deleting_a_board_removes_its_backup(self):
         service = self.start()
         await self.call(service, 'DELETE', f'boards/{OID}', actor=OWNER)

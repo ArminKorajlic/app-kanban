@@ -4,7 +4,7 @@ import { boardPath, normalizeBoard, casMutate, uid } from './storage.js'
 import { deleteSharedAsset, pullShared, pushSharedOp, readSharedCard, writeSharedNotes, olderHostRefused } from './sync.js'
 import { MAX_NOTES_CHARS, activityPath, cardSnapshot, createActivityEntries, describeCardChange, mergeActivity, operationCardId } from './activity.js'
 import { PUBLICATION, publicationPending } from './publication.js'
-import { attachmentPrefix } from './attachments.js'
+import { MAX_CARD_ATTACHMENTS, attachmentPrefix } from './attachments.js'
 import { applyBoardOp, completeCardNotes } from './operations.js'
 
 const touchesNotes = op => op?.type === 'complete-card'
@@ -97,6 +97,12 @@ function refuseInvalidOperation(doc, op) {
     && String(doc.cards[op.cardId].title || '').trim() !== op.expectedTitle) {
     throw boardError('Card title changed before completion; no card was changed.', 'card-title-changed')
   }
+  if (op.type === 'attach-file') {
+    const files = doc.cards[op.cardId].attachments || []
+    if (!files.some(file => file?.id === op.attachment?.id) && files.length >= MAX_CARD_ATTACHMENTS) {
+      throw boardError(`A card can hold up to ${MAX_CARD_ATTACHMENTS} attachments.`, 'too-many-attachments')
+    }
+  }
   if (op.type === 'move-card' && !doc.columns.some(c => c.id === op.toColumnId)) {
     throw boardError('Target column no longer exists.', 'missing-column')
   }
@@ -150,7 +156,22 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
     }))
   }
 
-  async function mutate(boardId, requested, { sharedState = null } = {}) {
+  // An uploaded file that its card edit can never attach (the card is gone,
+  // the card is full, the board became read-only) is deleted with the refusal,
+  // so it does not linger unattached. A retryable failure keeps it for the retry.
+  async function mutate(boardId, op, options) {
+    try {
+      return await applyOperation(boardId, op, options)
+    } catch (error) {
+      if (op?.type === 'attach-file' && op.attachment && !isRetryableBoardError(error)) {
+        const entry = await authority(boardId).catch(() => null)
+        await removeFiles(boardId, entry, [op.attachment], true)
+      }
+      throw error
+    }
+  }
+
+  async function applyOperation(boardId, requested, { sharedState = null } = {}) {
     const op = withAssignmentEvent(requested)
     const entry = await authority(boardId)
     if (entry && entry.role !== 'editor') throw boardError('This shared board is read-only.', 'read-only')

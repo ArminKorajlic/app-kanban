@@ -165,6 +165,25 @@ def event_ids(card):
     return {e.get('id') for e in events if isinstance(e, dict)} if isinstance(events, list) else set()
 
 
+COMPLETION_MARK = '✅ Done — '
+
+
+def completion_or_notes(entries, before, after):
+    """The activity a description save may carry: that the description changed,
+    or that the card was completed when the save adds its completion line
+    (operations.js completeCardNotes). Anything else is dropped."""
+    kept = []
+    for entry in entries:
+        if entry['type'] == 'completed':
+            line = COMPLETION_MARK + entry.get('text', '')
+            if line not in after or line in before: continue
+            entry.pop('from', None); entry.pop('to', None)
+        elif entry['type'] != 'notes':
+            continue
+        kept.append(entry)
+    return kept
+
+
 def card_column(columns, card_id):
     """The name of the list holding `card_id`, or '' when none does."""
     for column in columns if isinstance(columns, list) else []:
@@ -441,13 +460,25 @@ class Service:
         meta = pieces.get('meta', row['meta'])
         if document_bytes(meta, columns, total, count) > MAX_DOC:
             fail(413, 'board-too-large', 'The board is too large.')
+        # A file belongs to the card that attaches it: removing it from the card,
+        # or deleting the card (alone or with its list), deletes it, unless
+        # another card on the board still attaches it. Clients only remove a
+        # file by naming it ('remove-file' in operations.js); a whole list of
+        # files from an older or stale writer can only add.
+        released = set()
         for card_id in cards:
             previous = self.store.get('board-card', card_key(oid, card_id))
-            # A file belongs to the card that attaches it: removing it from the
-            # card, or deleting the card (alone or with its list), deletes it.
             kept = attachment_ids(stored[card_id]['card']) if card_id in stored else set()
-            for asset_id in attachment_ids(previous['card'] if previous else None) - kept:
-                self.store.delete('asset', f'{oid}/{asset_id}')
+            released |= attachment_ids(previous['card'] if previous else None) - kept
+        if released:
+            for key, piece in self.store.scan('board-card', oid + '/'):
+                if key.split('/', 1)[1] not in cards:
+                    released -= attachment_ids(piece['card'])
+            for piece in stored.values():
+                released -= attachment_ids(piece['card'])
+        for asset_id in released:
+            self.store.delete('asset', f'{oid}/{asset_id}')
+        for card_id in cards:
             if card_id in stored:
                 self.store.put('board-card', card_key(oid, card_id), stored[card_id])
             else:
@@ -869,8 +900,7 @@ class Service:
         # they stay editable as long as an edit does not make them longer.
         if len(notes) > MAX_NOTES_CHARS and len(notes) > len(current_notes):
             fail(413,'notes-too-long',f'A description can be at most {MAX_NOTES_CHARS} characters.')
-        # A description save can only be described as a description edit (or the completion it carries).
-        entries = [e for e in activity_entries(body.get('activity', []), actor, self.stamp()) if e['type'] in ('notes', 'completed')]
+        entries = completion_or_notes(activity_entries(body.get('activity', []), actor, self.stamp()), current_notes, notes)
         record['notes_version'] += 1
         if len(notes) > NOTES_PREVIEW_CHARS:
             record['notes'] = notes

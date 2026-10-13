@@ -5,6 +5,12 @@ import { parsePullRequestUrl } from './prMatching.js'
 import { applyAssignment, cardAssignment, sameAssignment } from './assignment.js'
 import { COLUMN_COLOR_KEYS, isDoneColumn, MAX_LABEL_NAME_CHARS, normalizeLabelNames } from './domain.js'
 
+function addFile(card, file) {
+  if (!file || typeof file !== 'object' || typeof file.id !== 'string' || !file.id) return
+  const files = Array.isArray(card.attachments) ? card.attachments : []
+  if (!files.some(item => item?.id === file.id)) card.attachments = [...files, structuredClone(file)]
+}
+
 function insertBefore(ids, itemId, beforeId) {
   const next = (Array.isArray(ids) ? ids : []).filter(id => id !== itemId)
   const anchor = beforeId == null ? -1 : next.indexOf(beforeId)
@@ -63,8 +69,12 @@ export function applyBoardOp(board, op) {
       if (card && op.patch && typeof op.patch === 'object') {
         const previousUrls = cardPullUrls(card)
         const previousAssignment = cardAssignment(card)
-        const { notes, notesLength, ...rest } = op.patch
+        const { notes, notesLength, attachments, ...rest } = op.patch
         Object.assign(card, hasExternalNotes(card) ? rest : { ...rest, ...(notes === undefined ? {} : { notes }) })
+        // A whole list of files is a copy of what its writer saw, possibly
+        // stale (a queued edit, a retry after someone else's change). It may add
+        // files but never removes one: removing is 'remove-file', by id.
+        if (Array.isArray(attachments)) for (const file of attachments) addFile(card, file)
         // An assignee set through a plain edit (the agent helper) joins the
         // card's assignment history like one made in the app; `assignmentEvent`
         // ({ id, at }) is minted once per edit (boardRepository.mutate).
@@ -81,6 +91,18 @@ export function applyBoardOp(board, op) {
           card.pullRequestUrl = card.pullRequestUrls[0] || ''
         }
       }
+      return board
+    }
+    // Files are added and removed one at a time, by id, against the card as it
+    // is when the edit applies, so concurrent changes to a card's files merge.
+    case 'attach-file': {
+      const card = board.cards[op.cardId]
+      if (card) addFile(card, op.attachment)
+      return board
+    }
+    case 'remove-file': {
+      const card = board.cards[op.cardId]
+      if (card && Array.isArray(card.attachments)) card.attachments = card.attachments.filter(file => file?.id !== op.attachmentId)
       return board
     }
     case 'assign-card': {

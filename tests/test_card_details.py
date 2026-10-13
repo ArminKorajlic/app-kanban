@@ -305,8 +305,46 @@ class CardDetails(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_description_save_can_only_be_described_as_one(self):
         saved = await self.call(self.a, 'PUT', f'{self.base}/cards/c1/notes', {'notes': 'New', 'expected_version': 0,
-            'activity': [entry('n1', type='notes'), entry('r1', type='renamed')]})
+            'activity': [entry('n1', type='notes'), entry('r1', type='renamed'),
+                         entry('c1x', type='completed', text='Shipped', **{'from': 'X', 'to': 'Y'})]})
+        # No completion line was added, so no completion is recorded.
         self.assertEqual([e['type'] for e in saved['activity']], ['notes'])
+
+    async def test_a_completion_is_recorded_only_with_the_line_it_adds(self):
+        saved = await self.call(self.a, 'PUT', f'{self.base}/cards/c1/notes', {'notes': 'Work\n\n✅ Done — Shipped',
+            'expected_version': 0, 'activity': [entry('c1', type='completed', text='Shipped', **{'from': 'X', 'to': 'Y'})]})
+        self.assertEqual([(e['type'], e['text'], 'from' in e) for e in saved['activity']], [('completed', 'Shipped', False)])
+        again = await self.call(self.a, 'PUT', f'{self.base}/cards/c1/notes', {'notes': 'Work\n\n✅ Done — Shipped\nmore',
+            'expected_version': saved['notes_version'], 'activity': [entry('c2', type='completed', text='Shipped')]})
+        self.assertEqual([e['id'] for e in again['activity']], ['c1'])
+
+    async def test_two_members_changing_one_cards_files_at_once_cannot_delete_either(self):
+        import base64
+        await self.join()
+        data = base64.b64encode(b'file').decode()
+        for aid in ('A', 'B', 'C'):
+            await self.call(self.a, 'PUT', f'{self.base}/assets/{aid}', {'mime': 'text/plain', 'data': data})
+        files = lambda *ids: [{'id': i, 'name': i, 'mime': 'text/plain'} for i in ids]
+        await self.save_pieces({'c1': {**(await self.call(self.a, 'GET', f'{self.base}/state'))['doc']['cards']['c1'], 'attachments': files('A')}}, {})
+        both = await self.call(self.b, 'GET', f'{self.base}/state', actor=APP)
+        save = lambda service, ids: self.call(service, 'POST', f'{self.base}/changes', {'pieces': {'cards': {'c1': {**both['doc']['cards']['c1'],
+            'attachments': files(*ids)}}}, 'expected_version': both['version']}, actor=APP)
+        self.assertEqual((await save(self.a, ('A', 'C')))['status'], 'ok')
+        # The second writer saw the card before C was added: its save conflicts instead of dropping C.
+        self.assertEqual((await save(self.b, ('A', 'B')))['status'], 'conflict')
+        assets = sorted(key.split('/', 1)[1] for key, _ in self.a.store.scan('asset', self.oid + '/'))
+        self.assertEqual(assets, ['A', 'B', 'C'])
+
+    async def test_a_file_another_card_still_attaches_is_kept(self):
+        import base64
+        await self.write(self.a, board(cards=('c1', 'c2')))
+        await self.call(self.a, 'PUT', f'{self.base}/assets/shared', {'mime': 'text/plain', 'data': base64.b64encode(b'x').decode()})
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        same = [{'id': 'shared', 'name': 'shared', 'mime': 'text/plain'}]
+        await self.save_pieces({cid: {**state['doc']['cards'][cid], 'attachments': same} for cid in ('c1', 'c2')}, {})
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        await self.save_pieces({'c1': {**state['doc']['cards']['c1'], 'attachments': []}}, {})
+        self.assertIsNotNone(self.a.store.get('asset', f'{self.oid}/shared'))
 
     async def test_a_file_goes_when_its_card_no_longer_attaches_it(self):
         import base64

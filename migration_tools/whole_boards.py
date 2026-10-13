@@ -12,7 +12,10 @@ after the upgrade are kept: each long description gets its full text back
 from its card record and loses `notesLength`. `--from-backup` instead restores
 the document each board had at the moment of the upgrade (the 'board-backup'
 record), discarding later edits; use it only if the converted board itself is
-wrong. Boards created after the upgrade have no backup and are always rebuilt.
+wrong. A board without a backup (created after the upgrade, or past the
+BACKUP_DAYS expiry) is rebuilt from its pieces instead, and the tool names it.
+A restored board may name files deleted since the upgrade; they show as
+unavailable.
 
 Card records (full descriptions and activity) are left in place: 0.6 ignores
 them, and upgrading again reuses them. The upgrade marker is removed, so the
@@ -46,8 +49,12 @@ def whole_document(store, row):
     return {**row['meta'], 'columns': row['columns'], 'cards': cards}
 
 
-def restore_whole_boards(root, *, from_backup=False):
-    """Rewrite every board in the store at `root` as a 0.6 document. Returns the board ids."""
+def restore_whole_boards(root, *, from_backup=False, rebuilt=None):
+    """Rewrite every board in the store at `root` as a 0.6 document. Returns the board ids.
+
+    With `from_backup`, the ids of boards that had no backup to restore are
+    added to `rebuilt` (they were rebuilt from their pieces).
+    """
     store = Store(Path(root))
     restored = []
     try:
@@ -56,6 +63,8 @@ def restore_whole_boards(root, *, from_backup=False):
                 if 'doc' in row:
                     continue
                 backup = store.get('board-backup', row['id']) if from_backup else None
+                if from_backup and not backup and rebuilt is not None:
+                    rebuilt.append(row['id'])
                 doc = backup['doc'] if backup else whole_document(store, row)
                 for key in (*BOARD_PIECES, 'meta', 'cards_bytes', 'card_count', 'log_floor'):
                     row.pop(key, None)
@@ -96,8 +105,12 @@ def main(argv=None):
     if args.drop_backups:
         print(f'Deleted {drop_backups(args.root)} upgrade backup(s).')
         return 0
-    restored = restore_whole_boards(args.root, from_backup=args.from_backup)
+    rebuilt = []
+    restored = restore_whole_boards(args.root, from_backup=args.from_backup, rebuilt=rebuilt)
     print(f'Restored {len(restored)} board(s) as whole documents.')
+    if rebuilt:
+        print(f'Warning: {len(rebuilt)} board(s) had no upgrade backup (created after the upgrade, or the backup '
+              f'expired) and were rebuilt from their current state instead: {", ".join(rebuilt)}', file=sys.stderr)
     return 0
 
 
