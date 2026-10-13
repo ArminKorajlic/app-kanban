@@ -227,6 +227,13 @@ test('two members changing a card’s files at once both keep their change, and 
   assert.deepEqual(deleted, [])
 })
 
+test('a stale whole file list cannot take a card past its file limit', () => {
+  const doc = { columns: [{ id: 'todo', name: 'To do', cardIds: ['c1'] }],
+    cards: { c1: card('c1', { attachments: Array.from({ length: 7 }, (_, i) => file(`x${i}`)) }) } }
+  applyBoardOp(doc, { type: 'update-card', cardId: 'c1', patch: { attachments: [file('a'), file('b'), file('c')] } })
+  assert.deepEqual(doc.cards.c1.attachments.map(item => item.id), ['x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'a'])
+})
+
 test('an upload whose card edit is refused for good is deleted; one waiting for a retry is kept', async () => {
   const { storage, files } = privateBoard([{ id: 'todo', name: 'To do', cardIds: ['c1'] }])
   const path = attachmentPath('b', 'up1', 'image/png')

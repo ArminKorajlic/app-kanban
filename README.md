@@ -18,11 +18,16 @@ A clean, mobile-first kanban board for Möbius.
   labels, due dates and assignees from the card itself. A description save
   records only that the description changed, or a completion whose line it adds.
 - Deleting a card or a list deletes its files and activity; removing a file from
-  a card deletes the file. Files are added and removed one at a time, by name,
+  a card deletes the file. Files are added and removed one at a time, by id,
   against the card as it is when the edit lands, so two people changing a
   card's files at once both keep their change; an older or stale copy of a
   card's file list can add files but never removes one, and a file another
-  card still attaches is never deleted. Deleting a board deletes everything kept about it:
+  card still attaches is never deleted. A card holds at most 8 files.
+- Known limits: a file removal queued offline by a Kanban older than 0.7.0 is
+  a shortened file list, which 0.7 only adds from, so after updating that file
+  stays on the card (remove it again). A file uploaded just before the app
+  closed, or one a stale file list could not add to a full card, stays stored
+  unattached and counts toward the board's file space until the board is deleted. Deleting a board deletes everything kept about it:
   its files and activity, edits still queued for it or kept for recovery,
   noticed assignment changes, capacity alerts and per-board view choices.
 - Long notes and activity on shared boards are stored beside the board on its

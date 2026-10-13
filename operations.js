@@ -3,12 +3,14 @@
 // base instead of trusting the runtime's blind offline write queue.
 import { parsePullRequestUrl } from './prMatching.js'
 import { applyAssignment, cardAssignment, sameAssignment } from './assignment.js'
-import { COLUMN_COLOR_KEYS, isDoneColumn, MAX_LABEL_NAME_CHARS, normalizeLabelNames } from './domain.js'
+import { COLUMN_COLOR_KEYS, isDoneColumn, MAX_CARD_ATTACHMENTS, MAX_LABEL_NAME_CHARS, normalizeLabelNames } from './domain.js'
 
 function addFile(card, file) {
   if (!file || typeof file !== 'object' || typeof file.id !== 'string' || !file.id) return
   const files = Array.isArray(card.attachments) ? card.attachments : []
-  if (!files.some(item => item?.id === file.id)) card.attachments = [...files, structuredClone(file)]
+  // The cap holds however a file arrives, including a stale whole list.
+  if (files.length >= MAX_CARD_ATTACHMENTS || files.some(item => item?.id === file.id)) return
+  card.attachments = [...files, structuredClone(file)]
 }
 
 function insertBefore(ids, itemId, beforeId) {

@@ -1,3 +1,6 @@
+// A card holds at most this many files (attachments.js, operations.js addFile).
+export const MAX_CARD_ATTACHMENTS = 8
+
 export function boardAccess(share, online) {
   if (!share) {
     return {

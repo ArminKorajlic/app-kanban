@@ -2,7 +2,7 @@
 
 import { deleteSharedAsset, getSharedAsset, putSharedAsset } from './sync.js'
 
-export const MAX_CARD_ATTACHMENTS = 8
+export { MAX_CARD_ATTACHMENTS } from './domain.js'
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 const MAX_IMAGE_EDGE = 1920
 const FALLBACK_MIME = 'application/octet-stream'
