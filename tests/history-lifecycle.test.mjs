@@ -9,7 +9,11 @@ import { createBoardRepository } from '../boardRepository.js'
 import { activityPath, cardTimeline, describeActivity, describeCardChange } from '../activity.js'
 import { applyBoardOp } from '../operations.js'
 import { assignmentHistory, createAssignmentEvent } from '../assignment.js'
-import { assignmentLogPath, deleteBoard } from '../storage.js'
+import { assignmentLogPath, boardPath } from '../storage.js'
+import { deleteBoard } from '../boardDeletion.js'
+import { attachmentPath } from '../attachments.js'
+import { enqueuePendingBoardOp, readPendingBoardOps } from '../pendingOps.js'
+import { CAPACITY_ALERTS_PATH } from '../capacityAlerts.js'
 import { asOlderHost } from './older-host.mjs'
 
 beforeEach(() => configureSync('fixture', 1))
@@ -137,40 +141,110 @@ test('an assignment recorded in activity is one timeline line with the host’s 
   assert.equal(timeline[0].event, event)
 })
 
-test('deleting a list deletes the activity of its cards on a private board', async () => {
-  let doc = { v: 1, title: 'B', columns: [{ id: 'todo', name: 'To do', cardIds: ['c1', 'c2'] }, { id: 'done', name: 'Done', cardIds: ['c3'] }],
-    cards: { c1: card('c1'), c2: card('c2'), c3: card('c3') } }
-  const files = { [activityPath('b', 'c1')]: { v: 1, entries: [] }, [activityPath('b', 'c2')]: { v: 1, entries: [] }, [activityPath('b', 'c3')]: { v: 1, entries: [] } }
+// A private board in app storage, with a file attached to each card.
+function privateBoard(columns) {
+  const cards = {}
+  for (const column of columns) for (const id of column.cardIds) {
+    cards[id] = card(id, { attachments: [{ id: `f-${id}`, name: `${id}.png`, mime: 'image/png', path: attachmentPath('b', `f-${id}`, 'image/png') }] })
+  }
+  const files = { [boardPath('b')]: { v: 1, title: 'B', columns, cards } }
+  for (const id of Object.keys(cards)) {
+    files[activityPath('b', id)] = { v: 1, entries: [] }
+    files[cards[id].attachments[0].path] = 'blob'
+  }
   const storage = {
     async getWithVersion(path) {
       if (path === 'shared.json') return { value: { byBoard: {} }, version: 'map' }
-      return path.startsWith('activity/') ? { value: files[path] ?? null, version: files[path] ? 'v' : null } : { value: structuredClone(doc), version: 'local' }
+      return { value: structuredClone(files[path] ?? null), version: files[path] ? 'v' : null }
     },
-    async durableWrite(path, value) { if (path.startsWith('activity/')) files[path] = value; else doc = structuredClone(value) },
+    async durableWrite(path, value) { files[path] = structuredClone(value) },
     async remove(path) { delete files[path] },
   }
+  return { storage, files }
+}
+
+test('deleting a list deletes the activity and files of its cards on a private board', async () => {
+  const { storage, files } = privateBoard([{ id: 'todo', name: 'To do', cardIds: ['c1', 'c2'] }, { id: 'done', name: 'Done', cardIds: ['c3'] }])
   await createBoardRepository({ storage }).mutate('b', { type: 'delete-column', columnId: 'todo' })
-  assert.deepEqual(Object.keys(files), [activityPath('b', 'c3')])
+  assert.deepEqual(Object.keys(files).sort(), [boardPath('b'), activityPath('b', 'c3'), attachmentPath('b', 'f-c3', 'image/png')].sort())
 })
 
-test('deleting a board deletes its activity, noticed assignments and personal view choices', async () => {
-  const files = {
-    'boards/b.json': {}, 'boards/keep.json': {},
-    [activityPath('b', 'c1')]: {}, [activityPath('b', 'c2')]: {}, [activityPath('keep', 'c1')]: {},
-    [assignmentLogPath('b')]: {}, [assignmentLogPath('keep')]: {},
-    'ui.json': { lastBoardId: 'keep', boardViews: { b: 'mine', keep: 'all' }, collapsedLists: { b: ['x'] },
-      openedLists: { b: [], keep: ['y'] }, seenCards: { b: {}, keep: {} } },
+test('a removed attachment’s file is deleted with the edit, also when a queued edit is replayed', async () => {
+  const { storage, files } = privateBoard([{ id: 'todo', name: 'To do', cardIds: ['c1'] }])
+  const path = attachmentPath('b', 'f-c1', 'image/png')
+  // The app queues the edit while offline; the replay runs the same repository edit.
+  await createBoardRepository({ storage }).mutate('b', { type: 'update-card', cardId: 'c1', patch: { attachments: [] } })
+  assert.equal(files[path], undefined)
+  // A path outside this board's files is never deleted, whatever a card claims.
+  files[boardPath('b')].cards.c1.attachments = [{ id: 'x', name: 'x', mime: 'image/png', path: 'ui.json' }]
+  files['ui.json'] = {}
+  await createBoardRepository({ storage }).mutate('b', { type: 'delete-card', cardId: 'c1' })
+  assert.deepEqual(files['ui.json'], {})
+  const board = await readFile(new URL('../ui/Board.jsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(board.slice(board.indexOf('const deleteCard ='), board.indexOf('const attachFiles =')), /deleteCardAttachment/u)
+})
+
+test('a shared host that deletes files itself is not asked again; an older host is', async () => {
+  for (const older of [false, true]) {
+    const host = sharedHost({ older })
+    host.doc().cards.c1.attachments = [{ id: 'f1', name: 'f1.png', mime: 'image/png' }]
+    const deleted = []
+    const request = (url, options = {}) => {
+      if (url.endsWith('/assets/f1') && options.method === 'DELETE') { deleted.push('f1'); return Response.json({ status: 'deleted' }) }
+      return host.request(url, options)
+    }
+    configureSync('fixture', 1)
+    await createBoardRepository({ ...host, request }).mutate('b', { type: 'update-card', cardId: 'c1', patch: { attachments: [] } })
+    assert.deepEqual(deleted, older ? ['f1'] : [], older ? 'older host' : 'current host')
   }
+})
+
+test('deleting a board deletes everything kept about it, and nothing about other boards', async () => {
+  const files = {}
   const storage = {
+    async get(path) { return structuredClone(files[path] ?? null) },
+    async set(path, value) { files[path] = structuredClone(value) },
     async remove(path) { delete files[path] },
-    async list(prefix) { return Object.keys(files).filter(path => path.startsWith(prefix)).map(path => ({ name: path.slice(prefix.length) })) },
+    async list(prefix, options = {}) {
+      return Object.keys(files).filter(path => path.startsWith(prefix))
+        .map(path => ({ name: path.slice(prefix.length), ...(options.includeContent ? { content: files[path] } : {}) }))
+    },
     async getWithVersion(path) { return { value: structuredClone(files[path] ?? null), version: files[path] ? 'v' : null } },
     async durableWrite(path, value) { files[path] = structuredClone(value) },
   }
+  for (const id of ['b', 'keep']) {
+    files[boardPath(id)] = {}
+    files[activityPath(id, 'c1')] = {}
+    files[attachmentPath(id, 'f1', 'image/png')] = 'blob'
+    files[assignmentLogPath(id)] = {}
+    await enqueuePendingBoardOp(id, { type: 'rename-board', title: 'Queued card text' }, storage)
+    files[`recovered-board-ops/${id}/r1.json`] = { id: 'r1', op: {} }
+    files[`recovery-acknowledgements/${id}/r1.json`] = { id: 'r1' }
+  }
+  files[CAPACITY_ALERTS_PATH] = { b: { board: true }, keep: { files: true } }
+  files['ui.json'] = { lastBoardId: 'b', boardViews: { b: 'mine', keep: 'all' }, collapsedLists: { b: ['x'] },
+    openedLists: { b: [], keep: ['y'] }, seenCards: { b: {}, keep: {} } }
+
   await deleteBoard('b', storage)
-  assert.deepEqual(Object.keys(files).sort(), ['boards/keep.json', activityPath('keep', 'c1'), assignmentLogPath('keep'), 'ui.json'].sort())
-  assert.deepEqual(files['ui.json'], { lastBoardId: 'keep', boardViews: { keep: 'all' }, collapsedLists: {},
+  assert.deepEqual(Object.keys(files).filter(path => path.includes('/b/') || path.includes('/b.json') || path.endsWith('/b')), [])
+  assert.equal((await readPendingBoardOps('keep', storage)).length, 1)
+  assert.ok(files[attachmentPath('keep', 'f1', 'image/png')] && files[activityPath('keep', 'c1')] && files[assignmentLogPath('keep')])
+  assert.deepEqual(files[CAPACITY_ALERTS_PATH], { keep: { files: true } })
+  assert.deepEqual(files['ui.json'], { lastBoardId: null, boardViews: { keep: 'all' }, collapsedLists: {},
     openedLists: { keep: ['y'] }, seenCards: { keep: {} } })
+})
+
+test('a cleanup that fails is reported after the board itself is gone', async () => {
+  const files = { [boardPath('b')]: {}, [activityPath('b', 'c1')]: {} }
+  const storage = {
+    async get() { return null }, async set() {},
+    async remove(path) { if (path.startsWith('activity/')) throw new Error('offline'); delete files[path] },
+    async list(prefix) { return Object.keys(files).filter(path => path.startsWith(prefix)).map(path => ({ name: path.slice(prefix.length) })) },
+    async getWithVersion() { return { value: null, version: null } },
+    async durableWrite() {},
+  }
+  await assert.rejects(deleteBoard('b', storage), /some of what was kept about it could not be/u)
+  assert.equal(files[boardPath('b')], undefined)
 })
 
 test('a colour-only label and the card counts are announced to screen readers', async () => {

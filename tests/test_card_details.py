@@ -259,6 +259,75 @@ class CardDetails(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.a.store.get('card', f'{self.oid}/c2'))
         self.assertIsNone(self.a.store.get('card', f'{self.oid}/c1'))
 
+    async def save_pieces(self, cards, entries, columns=None, actor=APP):
+        state = await self.call(self.a, 'GET', f'{self.base}/state', actor=actor)
+        pieces = {'cards': cards, **({'columns': columns} if columns is not None else {})}
+        return await self.call(self.a, 'POST', f'{self.base}/changes', {'pieces': pieces,
+            'expected_version': state['version'], 'activity': entries}, actor=actor)
+
+    async def test_activity_must_match_what_the_edit_changed(self):
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        card = {**state['doc']['cards']['c1'], 'title': 'Real title'}
+        claims = [entry('r1', type='renamed', **{'from': 'Fake', 'to': 'Also fake'}),
+                  entry('d1', type='due', to='2030-01-01'), entry('m1', type='moved', to='Nowhere'),
+                  entry('x1', type='checklist-added', text='Never added')]
+        saved = await self.save_pieces({'c1': card}, {'c1': claims})
+        # Only the rename happened; its titles come from the card, not the writer.
+        self.assertEqual([(e['type'], e['from'], e['to']) for e in saved['activity']['c1']], [('renamed', 'c1', 'Real title')])
+
+    async def test_an_unchanged_card_cannot_gain_activity(self):
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        saved = await self.save_pieces({'c1': state['doc']['cards']['c1']}, {'c1': [entry('e1')]})
+        self.assertEqual(saved['activity']['c1'], [])
+
+    async def test_moves_and_new_cards_name_the_lists_the_host_sees(self):
+        await self.write(self.a, {**board(), 'columns': [{'id': 'todo', 'name': 'To do', 'cardIds': ['c1']},
+                                                         {'id': 'done', 'name': 'Done', 'cardIds': []}]})
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        columns = [{'id': 'todo', 'name': 'To do', 'cardIds': ['c2']}, {'id': 'done', 'name': 'Done', 'cardIds': ['c1']}]
+        saved = await self.save_pieces({'c1': {**state['doc']['cards']['c1'], 'title': 'c1'} | {'label': 'x'},
+                                        'c2': {'id': 'c2', 'title': 'New', 'notes': ''}},
+                                       {'c1': [entry('m1', type='moved', **{'from': 'A', 'to': 'B'})],
+                                        'c2': [entry('n1', type='created', to='Somewhere else')]}, columns=columns)
+        self.assertEqual([(e['from'], e['to']) for e in saved['activity']['c1']], [('To do', 'Done')])
+        self.assertEqual(saved['activity']['c2'][0]['to'], 'To do')
+
+    async def test_an_assignment_line_cannot_claim_an_earlier_event(self):
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        old_event = {'id': 'ev-old', 'at': '2026-10-01T00:00:00Z', 'from': {'label': '', 'host': ''}, 'to': {'label': 'Ana', 'host': ''}}
+        await self.write(self.a, {**state['doc'], 'cards': {'c1': {**state['doc']['cards']['c1'], 'assignee': 'Ana', 'assignmentHistory': [old_event]}}})
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        card = {**state['doc']['cards']['c1'], 'assignee': 'Ben'}
+        saved = await self.save_pieces({'c1': card}, {'c1': [entry('ev-old', type='assigned')]})
+        line = saved['activity']['c1'][0]
+        self.assertNotEqual(line['id'], 'ev-old')
+        self.assertEqual((line['from'], line['to']), ('Ana', 'Ben'))
+
+    async def test_a_description_save_can_only_be_described_as_one(self):
+        saved = await self.call(self.a, 'PUT', f'{self.base}/cards/c1/notes', {'notes': 'New', 'expected_version': 0,
+            'activity': [entry('n1', type='notes'), entry('r1', type='renamed')]})
+        self.assertEqual([e['type'] for e in saved['activity']], ['notes'])
+
+    async def test_a_file_goes_when_its_card_no_longer_attaches_it(self):
+        import base64
+        data = base64.b64encode(b'file').decode()
+        await self.write(self.a, board(cards=('c1', 'c2')))
+        for aid in ('one', 'two', 'three'):
+            await self.call(self.a, 'PUT', f'{self.base}/assets/{aid}', {'mime': 'text/plain', 'data': data})
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        files = lambda *ids: [{'id': i, 'name': i, 'mime': 'text/plain'} for i in ids]
+        await self.save_pieces({'c1': {**state['doc']['cards']['c1'], 'attachments': files('one', 'two')},
+                                'c2': {**state['doc']['cards']['c2'], 'attachments': files('three')}}, {})
+        assets = lambda: sorted(key.split('/', 1)[1] for key, _ in self.a.store.scan('asset', self.oid + '/'))
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        await self.save_pieces({'c1': {**state['doc']['cards']['c1'], 'attachments': files('two')}}, {})
+        self.assertEqual(assets(), ['three', 'two'])
+        # Deleting a card (here by an older Kanban's whole-board save) deletes its files.
+        state = await self.call(self.a, 'GET', f'{self.base}/state')
+        doc = state['doc']; del doc['cards']['c2']; doc['columns'][0]['cardIds'] = ['c1']
+        await self.call(self.a, 'PUT', f'{self.base}/state', {'doc': doc, 'expected_version': state['version']})
+        self.assertEqual(assets(), ['two'])
+
     async def test_deleting_the_board_removes_card_details(self):
         await self.write(self.a, board(LONG))
         await self.call(self.a, 'DELETE', f'boards/{self.oid}')

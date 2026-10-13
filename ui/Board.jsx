@@ -1686,16 +1686,11 @@ export default memo(function Board({
     mutateCard({ type: 'delete-checklist-item', cardId, itemId })
   }
 
+  // The card's files and activity go with it wherever the deletion lands,
+  // including a replay of a queued edit (boardRepository.mutate).
   const deleteCard = cardId => {
-    const attachments = [...(boardRef.current?.cards[cardId]?.attachments || [])]
     setOpenCardId(null)
-    mutate(
-      { type: 'delete-card', cardId },
-      () => {
-        window.mobius?.signal?.('item_deleted')
-        Promise.allSettled(attachments.map(attachment => deleteCardAttachment({ share: shareRef.current, attachment })))
-      },
-    )
+    mutate({ type: 'delete-card', cardId }, () => window.mobius?.signal?.('item_deleted'))
   }
 
   const attachFiles = async filesInput => {
@@ -1745,14 +1740,10 @@ export default memo(function Board({
     attachFiles(files)
   }
 
+  // The file itself is deleted with the edit that removes it (boardRepository.mutate).
   const removeAttachment = (cardId, attachment) => {
     const attachments = (boardRef.current?.cards[cardId]?.attachments || []).filter(item => item.id !== attachment.id)
-    mutate(
-      { type: 'update-card', cardId, patch: { attachments } },
-      () => deleteCardAttachment({ share: shareRef.current, attachment }).catch(error => {
-        window.mobius?.signal?.('error', { message: String(error?.message || error), source: 'delete-attachment' })
-      }),
-    )
+    mutate({ type: 'update-card', cardId, patch: { attachments } })
   }
 
   const downloadAttachment = async attachment => {

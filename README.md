@@ -13,8 +13,13 @@ A clean, mobile-first kanban board for Möbius.
 - A card sheet with assignee, label and due-date chips, short previews of long
   notes, checklists and attachments, and an Activity history of who changed
   what and when. On a shared board an edit and its activity are saved together,
-  and the host stamps who made it, when, and whether it was their agent.
-  Deleting a card, a list or a board deletes the history kept about it.
+  and the host stamps who made it, when, and whether it was their agent; it
+  keeps only entries that match what the edit changed, and writes titles, lists,
+  labels, due dates and assignees from the card itself.
+- Deleting a card or a list deletes its files and activity; removing a file from
+  a card deletes the file. Deleting a board deletes everything kept about it:
+  its files and activity, edits still queued for it or kept for recovery,
+  noticed assignment changes, capacity alerts and per-board view choices.
 - Long notes and activity on shared boards are stored beside the board on its
   host, so the board document stays small; edits to the same notes are
   version-checked instead of silently overwritten.
@@ -100,7 +105,13 @@ hosting Kanban changes data that 0.6 cannot read:
   invitations and attachments are unchanged. All boards convert in one
   transaction: if anything fails, nothing changes and the next start tries again.
 - **Backup.** Each board's 0.6 document is kept, unchanged, in a `board-backup`
-  record in the same database. Nothing reads it; deleting the board deletes it.
+  record in the same database, for **30 days**, then deleted automatically when
+  the service starts. Nothing reads it. It still holds anything deleted from the
+  board since the upgrade (cards, descriptions, the names of removed files), and
+  takes up to 256 KB per board (the 0.6 limit) outside the board's own limit.
+  Deleting the board deletes it at once, and
+  `python3 -m migration_tools.whole_boards <Kanban storage directory> --drop-backups`
+  deletes every backup now, without changing any board.
 - **Members.** Joined members on any version keep working: 0.6 members save
   whole boards, which the host stores as the pieces they changed, and their
   next poll receives the whole board once.
@@ -109,11 +120,26 @@ hosting Kanban changes data that 0.6 cannot read:
   app source and install 0.6. Each board becomes one document again, with full
   descriptions and every edit made since the upgrade. `--from-backup` instead
   restores the documents saved at the upgrade and discards later edits; use it
-  only if a converted board itself is wrong. Activity has no place in 0.6 and
-  stays in its records, unused, until the next upgrade.
+  only if a converted board itself is wrong (and within the 30 days). Activity
+  has no place in 0.6 and stays in its records, unused, until the next upgrade.
+- **Pre-release builds.** A Kanban built from this change before 0.7.0 saved
+  activity through a separate request that 0.7 no longer has; until it updates,
+  its edits save normally but record no activity.
 
 The upgrade only touches boards this deployment hosts. Private boards, and the
 copies kept of boards joined elsewhere, live in app storage and are not converted.
+
+## Who an activity entry names
+
+The board's host names the member it authenticated and uses its own clock;
+neither can be set by the writer. "Agent" is how the request was made, not a
+separate identity: on a deployment, a call made with the owner's token (the
+agent helper, or the owner calling the service directly) or by a delegated
+helper counts as the agent, while the Kanban app's own screen counts as the
+person. A member's deployment states this for its own edits and the host
+accepts it, so a member can label its own edits as its agent's (never as
+anyone else's). Entry wording such as checklist text is the writer's, limited
+to an edit that really changed that part of the card.
 
 ## Existing shared boards
 

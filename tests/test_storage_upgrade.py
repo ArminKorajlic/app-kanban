@@ -14,7 +14,7 @@ from unittest import mock
 from collaboration import service as kanban
 from collaboration.service import Service, NOTES_PREVIEW_CHARS, PROTOCOL
 from collaboration.store import Store
-from migration_tools.whole_boards import restore_whole_boards
+from migration_tools.whole_boards import drop_backups, restore_whole_boards
 
 FIXTURE = json.loads((Path(__file__).parent / 'fixtures' / 'kanban-0.6.4-host.json').read_text())
 HOST, OID = FIXTURE['host'], FIXTURE['board']
@@ -68,7 +68,7 @@ class StorageUpgrade(unittest.IsolatedAsyncioTestCase):
         service = self.start()
         row = self.rows('board')[OID]
         self.assertNotIn('doc', row)
-        self.assertEqual(self.rows('schema'), {'board-pieces': {'version': 1}})
+        self.assertEqual(set(self.rows('schema')), {'board-pieces', 'backup-expiry'})
         # Version, membership and attachments are untouched; members get the whole board once.
         self.assertEqual(row['version'], before['version'])
         self.assertEqual(row['members'], before['members'])
@@ -132,7 +132,7 @@ class StorageUpgrade(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['doc']['cards']['long']['notes'], edited)
         self.assertNotIn('notesLength', row['doc']['cards']['long'])
         self.assertEqual(self.rows('board-card'), {})
-        self.assertEqual(self.rows('schema'), {})
+        self.assertNotIn('board-pieces', self.rows('schema'))
         # Upgrading again converts the restored document, keeping the edit.
         again = self.start()
         self.assertEqual((await self.call(again, 'GET', f'boards/{HOST}/{OID}/cards/long'))['notes'], edited)
@@ -168,6 +168,22 @@ class StorageUpgrade(unittest.IsolatedAsyncioTestCase):
         card = {**state['doc']['cards']['plain'], 'title': 'Saved after a failed read'}
         saved = await self.call(service, 'POST', f'boards/{HOST}/{OID}/changes', {'pieces': {'cards': {'plain': card}}, 'expected_version': state['version']})
         self.assertEqual(saved['status'], 'ok')
+
+    async def test_the_backup_expires_after_its_retention(self):
+        Service(self.root, host=HOST, app_id=7, owner_name='A', now=lambda: 1_800_000_000).close()
+        self.assertEqual(set(self.rows('board-backup')), {OID})
+        Service(self.root, host=HOST, app_id=7, owner_name='A', now=lambda: 1_800_000_000 + (kanban.BACKUP_DAYS - 1) * 86400).close()
+        self.assertEqual(set(self.rows('board-backup')), {OID})
+        Service(self.root, host=HOST, app_id=7, owner_name='A', now=lambda: 1_800_000_000 + kanban.BACKUP_DAYS * 86400).close()
+        self.assertEqual(self.rows('board-backup'), {})
+        self.assertNotIn('backup-expiry', self.rows('schema'))
+
+    async def test_backups_can_be_dropped_at_once_without_touching_boards(self):
+        self.start().close()
+        boards = self.rows('board')
+        self.assertEqual(drop_backups(self.root), 1)
+        self.assertEqual(self.rows('board-backup'), {})
+        self.assertEqual(self.rows('board'), boards)
 
     async def test_deleting_a_board_removes_its_backup(self):
         service = self.start()

@@ -58,6 +58,18 @@ ACTIVITY_TYPES = frozenset((
     'attachment-added', 'attachment-removed', 'pr-added', 'pr-removed', 'pr-changed',
 ))
 ACTIVITY_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+# The card fields each kind of activity entry describes (see verified_activity).
+ACTIVITY_FIELDS = {
+    'renamed': ('title',), 'notes': ('notes', 'notesLength'), 'label': ('label',), 'due': ('due',),
+    'assigned': ('assignee', 'assigneeHost'),
+    **{kind: ('checklist',) for kind in ('checklist-added', 'checklist-removed', 'checklist-checked',
+                                          'checklist-unchecked', 'checklist-edited')},
+    'attachment-added': ('attachments',), 'attachment-removed': ('attachments',),
+    **{kind: ('pullRequestUrls', 'pullRequestUrl') for kind in ('pr-added', 'pr-removed', 'pr-changed')},
+}
+# The 0.6 document kept at the 0.7 upgrade (store_boards_in_pieces) is deleted
+# after this long; migration_tools/whole_boards.py --drop-backups deletes it sooner.
+BACKUP_DAYS = 30
 CARD_ID = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
 PRESENCE_TTL = 12
 # Members poll every 1-3 s. Persisting `seen` only once it is this old keeps
@@ -139,6 +151,70 @@ def merge_activity(existing, incoming):
         merged.setdefault(entry['id'], entry)
     ordered = sorted(merged.values(), key=lambda entry: activity_time(entry['at']))
     return ordered[-MAX_ACTIVITY_PER_CARD:]
+
+
+def attachment_ids(card):
+    """The ids of the files a card attaches."""
+    files = card.get('attachments') if isinstance(card, dict) else None
+    return {f['id'] for f in files if isinstance(f, dict) and isinstance(f.get('id'), str)} if isinstance(files, list) else set()
+
+
+def event_ids(card):
+    """The ids of a card's assignment events (assignment.js)."""
+    events = card.get('assignmentHistory') if isinstance(card, dict) else None
+    return {e.get('id') for e in events if isinstance(e, dict)} if isinstance(events, list) else set()
+
+
+def card_column(columns, card_id):
+    """The name of the list holding `card_id`, or '' when none does."""
+    for column in columns if isinstance(columns, list) else []:
+        if isinstance(column, dict) and card_id in (column.get('cardIds') or []):
+            return str(column.get('name') or '')
+    return ''
+
+
+def assignee_name(card):
+    return str(card.get('assignee') or card.get('assigneeHost') or '').strip()
+
+
+def verified_activity(entries, before, after, column_before, column_after):
+    """Keep only entries that describe what this edit actually changed on the card.
+
+    A writer describes its own edit, so an entry must match a change to the
+    card (`before` -> `after`, None when the card did not exist). Where the
+    host can read the facts itself (titles, lists, label, due date, assignee)
+    it writes them, rather than trusting the writer's words.
+    """
+    before = before if isinstance(before, dict) else None
+    changed = lambda fields: before is not None and any(before.get(f) != after.get(f) for f in fields)
+    clip = lambda value: str(value or '').strip()[:MAX_ACTIVITY_TEXT]
+    kept = []
+    for entry in entries:
+        kind = entry['type']
+        if kind == 'created':
+            if before is not None: continue
+            entry.update(to=clip(column_after)); entry.pop('from', None)
+        elif kind == 'completed':
+            if before is None or (before == after and column_before == column_after): continue
+        elif kind == 'moved':
+            if before is None or column_before == column_after: continue
+            entry.update({'from': clip(column_before), 'to': clip(column_after)})
+        elif not changed(ACTIVITY_FIELDS[kind]):
+            continue
+        elif kind == 'renamed':
+            entry.update({'from': clip(before.get('title')), 'to': clip(after.get('title'))})
+        elif kind in ('label', 'due'):
+            entry.update({'from': clip(before.get(kind)), 'to': clip(after.get(kind))})
+            for side in ('from', 'to'):
+                if kind == 'label' and entry[side] == 'none': entry[side] = ''
+        elif kind == 'assigned':
+            entry.update({'from': clip(assignee_name(before)), 'to': clip(assignee_name(after))})
+            # Its id names the assignment event this edit added (the card sheet
+            # shows them as one line); it may never claim an earlier event.
+            if entry['id'] in event_ids(before):
+                entry['id'] = uuid.uuid4().hex
+        kept.append(entry)
+    return kept
 
 
 def agent_request(actor):
@@ -248,15 +324,16 @@ class Service:
         self.owner_name = str(owner_name or '').strip() or self.host
         self.now = now
         self.store_boards_in_pieces()
+        self.expire_backups()
 
     def store_boards_in_pieces(self):
         """Convert boards saved as one document (Kanban 0.6 and older) once, when the service starts.
 
         All boards convert in one transaction: a failure leaves every board as
         it was and the next start tries again. Each board's document is kept,
-        exactly as it was, in a 'board-backup' record that nothing else reads;
-        migration_tools/whole_boards.py turns pieces back into documents for a
-        downgrade (README: "Storage upgrade in 0.7").
+        exactly as it was, in a 'board-backup' record that nothing else reads,
+        for BACKUP_DAYS (expire_backups); migration_tools/whole_boards.py turns
+        pieces back into documents for a downgrade (README: "Storage upgrade in 0.7").
         """
         if self.store.get('schema', 'board-pieces'):
             return
@@ -269,7 +346,21 @@ class Service:
                         'saved_at': self.stamp()})
                     self.write_board_pieces(row, copy.deepcopy(row.pop('doc')))
                     self.store.put('board', row['id'], row)
+                    self.store.put('schema', 'backup-expiry', {'at': self.now() + BACKUP_DAYS * 86400})
             self.store.put('schema', 'board-pieces', {'version': 1})
+
+    def expire_backups(self):
+        """Delete the upgrade backups once BACKUP_DAYS have passed: they hold content deleted since.
+
+        Every backup comes from the one upgrade, so one expiry time covers them
+        all, and a request reads only that small record.
+        """
+        expiry = self.store.get('schema', 'backup-expiry')
+        if not expiry or self.now() < expiry['at']:
+            return
+        with self.store.transaction():
+            self.store.delete_kind('board-backup')
+            self.store.delete('schema', 'backup-expiry')
 
     def write_board_pieces(self, row, doc):
         """Store a whole board as `row`'s pieces, replacing any it had.
@@ -351,6 +442,12 @@ class Service:
         if document_bytes(meta, columns, total, count) > MAX_DOC:
             fail(413, 'board-too-large', 'The board is too large.')
         for card_id in cards:
+            previous = self.store.get('board-card', card_key(oid, card_id))
+            # A file belongs to the card that attaches it: removing it from the
+            # card, or deleting the card (alone or with its list), deletes it.
+            kept = attachment_ids(stored[card_id]['card']) if card_id in stored else set()
+            for asset_id in attachment_ids(previous['card'] if previous else None) - kept:
+                self.store.delete('asset', f'{oid}/{asset_id}')
             if card_id in stored:
                 self.store.put('board-card', card_key(oid, card_id), stored[card_id])
             else:
@@ -772,7 +869,8 @@ class Service:
         # they stay editable as long as an edit does not make them longer.
         if len(notes) > MAX_NOTES_CHARS and len(notes) > len(current_notes):
             fail(413,'notes-too-long',f'A description can be at most {MAX_NOTES_CHARS} characters.')
-        entries = activity_entries(body.get('activity', []), actor, self.stamp())
+        # A description save can only be described as a description edit (or the completion it carries).
+        entries = [e for e in activity_entries(body.get('activity', []), actor, self.stamp()) if e['type'] in ('notes', 'completed')]
         record['notes_version'] += 1
         if len(notes) > NOTES_PREVIEW_CHARS:
             record['notes'] = notes
@@ -835,6 +933,10 @@ class Service:
             if expected < row['log_floor'] or touched_pieces(pieces) & self.touched_since(row,expected):
                 return {'status':'conflict',**self.since_reply(row,expected)}
             self.settle_notes(row,pieces['cards'])
+            columns = pieces.get('columns', row['columns'])
+            entries = {cid: verified_activity(items, self.board_card(row, cid), pieces['cards'][cid],
+                                              card_column(row['columns'], cid), card_column(columns, cid))
+                       for cid, items in entries.items()}
             self.commit_pieces(row,pieces)
             # The save's activity commits in the same transaction as the save,
             # so a lost reply or a retry can never leave one without the other.

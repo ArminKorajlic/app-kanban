@@ -45,3 +45,10 @@ export async function alertCapacity({ storage, notify, boardId, boardTitle, capa
   }
   return sent
 }
+
+export async function forgetCapacityAlerts(storage, boardId) {
+  const saved = await storage.get(CAPACITY_ALERTS_PATH)
+  if (!saved || !Object.hasOwn(saved, boardId)) return
+  const { [boardId]: _, ...rest } = saved
+  await storage.set(CAPACITY_ALERTS_PATH, rest)
+}

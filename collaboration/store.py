@@ -65,6 +65,10 @@ class Store:
         else:
             self.db.execute('DELETE FROM records WHERE kind=? AND id>=? AND id<=?', (kind, prefix, through))
 
+    def delete_kind(self, kind):
+        """Delete every record of `kind`; returns how many there were."""
+        return self.db.execute('DELETE FROM records WHERE kind=?', (kind,)).rowcount
+
     def usage(self, kind, prefix, field, *, excluding=None):
         """(count, sum of `field`) over records under `prefix`, without decoding their bodies in Python.
 

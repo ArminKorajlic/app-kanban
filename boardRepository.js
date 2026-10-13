@@ -1,9 +1,10 @@
 // Board authority belongs here, not to the UI or a caller's guessed file.
 // The storage adapter differs between browser and CLI; board semantics do not.
 import { boardPath, normalizeBoard, casMutate, uid } from './storage.js'
-import { pullShared, pushSharedOp, readSharedCard, writeSharedNotes, olderHostRefused } from './sync.js'
+import { deleteSharedAsset, pullShared, pushSharedOp, readSharedCard, writeSharedNotes, olderHostRefused } from './sync.js'
 import { MAX_NOTES_CHARS, activityPath, cardSnapshot, createActivityEntries, describeCardChange, mergeActivity, operationCardId } from './activity.js'
 import { PUBLICATION, publicationPending } from './publication.js'
+import { attachmentPrefix } from './attachments.js'
 import { applyBoardOp, completeCardNotes } from './operations.js'
 
 const touchesNotes = op => op?.type === 'complete-card'
@@ -27,6 +28,17 @@ function withAssignmentEvent(op) {
 }
 
 const RESERVED_IDS = new Set(['__proto__', 'prototype', 'constructor'])
+
+// Every file the board's cards attach, by attachment id.
+function boardFiles(doc) {
+  const files = new Map()
+  for (const card of Object.values(doc?.cards || {})) {
+    for (const file of Array.isArray(card?.attachments) ? card.attachments : []) {
+      if (file && typeof file.id === 'string') files.set(file.id, file)
+    }
+  }
+  return files
+}
 
 export function boardError(message, code, { discardable = true } = {}) {
   return Object.assign(new Error(message), { code, retryable: false, discardable })
@@ -171,8 +183,11 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
       if (boardOp.type === 'add-card' && Object.hasOwn(doc.cards, boardOp.card.id)) return doc
       const before = cardSnapshot(doc, cardId)
       const cardIds = Object.keys(doc.cards)
+      const filesBefore = boardFiles(doc)
       const next = applyBoardOp(doc, boardOp) || doc
-      change = { before, after: cardSnapshot(next, cardId), removed: cardIds.filter(id => !Object.hasOwn(next.cards, id)) }
+      const filesAfter = boardFiles(next)
+      change = { before, after: cardSnapshot(next, cardId), removed: cardIds.filter(id => !Object.hasOwn(next.cards, id)),
+        files: [...filesBefore.values()].filter(file => !filesAfter.has(file.id)) }
       return next
     }
     // A completion already recorded with its description is not recorded twice.
@@ -200,8 +215,23 @@ export function createBoardRepository({ storage, request = globalThis.fetch, via
     const activity = entry
       ? sharedActivity(cardId, notesSaved, unchanged ? null : { entries: sent || [], activity: savedActivity?.[cardId] })
       : await recordPrivateActivity(boardId, cardId, describe(boardDrafts()), change?.removed || [])
+    // A host that answers a piece save with `activity` deleted removed files in the same save.
+    if (change?.files.length && !unchanged) await removeFiles(boardId, entry, change.files, !savedActivity)
     return { ...result, activity, authority: entry ? 'shared' : 'private',
       ...(entry ? { host: entry.host, oid: entry.oid } : {}) }
+  }
+
+  // Files the landed edit removed from the board (a removed attachment, or a
+  // deleted card or list). A private board's files are in app storage; a
+  // shared board's host deletes its own unless it predates doing so. Failures
+  // leave a file behind, never undo the edit; deleting the board removes it.
+  async function removeFiles(boardId, entry, files, hostKeepsFiles) {
+    const prefix = attachmentPrefix(boardId)
+    await Promise.allSettled(files.map(file => {
+      if (entry) return hostKeepsFiles ? deleteSharedAsset(entry, file.id, request) : null
+      const own = typeof file.path === 'string' && file.path.startsWith(prefix) && !file.path.split('/').includes('..')
+      return own ? storage.remove?.(file.path) : null
+    }))
   }
 
   // What a shared edit's host saved: each part (`{ entries, activity }`) sent

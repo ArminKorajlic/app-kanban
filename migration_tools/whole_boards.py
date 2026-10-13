@@ -5,6 +5,7 @@ Stop the Kanban service (or install the older version) before running it,
 and back up `collaboration.sqlite3` first.
 
     python3 -m migration_tools.whole_boards <kanban storage dir> [--from-backup]
+    python3 -m migration_tools.whole_boards <kanban storage dir> --drop-backups
 
 By default every board is rebuilt from its current pieces, so edits made
 after the upgrade are kept: each long description gets its full text back
@@ -16,6 +17,11 @@ wrong. Boards created after the upgrade have no backup and are always rebuilt.
 Card records (full descriptions and activity) are left in place: 0.6 ignores
 them, and upgrading again reuses them. The upgrade marker is removed, so the
 next 0.7 start converts the documents again.
+
+`--drop-backups` changes no board: it deletes the documents saved at the
+upgrade now, instead of when they expire (BACKUP_DAYS after the upgrade).
+They keep whatever was deleted from a board since, so drop them once the
+upgraded boards look right.
 """
 import argparse
 import sys
@@ -66,13 +72,30 @@ def restore_whole_boards(root, *, from_backup=False):
     return restored
 
 
+def drop_backups(root):
+    """Delete every upgrade backup in the store at `root`. Returns how many there were."""
+    store = Store(Path(root))
+    try:
+        with store.transaction():
+            dropped = store.delete_kind('board-backup')
+            store.delete('schema', 'backup-expiry')
+    finally:
+        store.close()
+    return dropped
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('root', help="the Kanban app's storage directory (holds collaboration.sqlite3)")
-    parser.add_argument('--from-backup', action='store_true', help='restore the documents saved at the upgrade')
+    choice = parser.add_mutually_exclusive_group()
+    choice.add_argument('--from-backup', action='store_true', help='restore the documents saved at the upgrade')
+    choice.add_argument('--drop-backups', action='store_true', help='delete the documents saved at the upgrade; change no board')
     args = parser.parse_args(argv)
     if not (Path(args.root) / 'collaboration.sqlite3').is_file():
         parser.error('No collaboration.sqlite3 in that directory.')
+    if args.drop_backups:
+        print(f'Deleted {drop_backups(args.root)} upgrade backup(s).')
+        return 0
     restored = restore_whole_boards(args.root, from_backup=args.from_backup)
     print(f'Restored {len(restored)} board(s) as whole documents.')
     return 0

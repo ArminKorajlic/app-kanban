@@ -38,6 +38,8 @@
     "operations.js",
     "pendingOps.js",
     "storage.js",
+    "boardDeletion.js",
+    "capacityAlerts.js",
     "sync.js",
     "request-guard.js",
     "theme.js",

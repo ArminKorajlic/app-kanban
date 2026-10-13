@@ -15,7 +15,6 @@
 
 import { COLUMN_COLOR_KEYS, defaultColumnColor, isIsoDate, normalizeLabelNames } from './domain.js'
 import { cardPullUrls } from './operations.js'
-import { activityPrefix } from './activity.js'
 
 export const SCHEMA_V = 1
 
@@ -289,23 +288,6 @@ export async function createBoard(title) {
   const doc = newBoardDoc(title)
   await store().durableWrite(boardPath(doc.id), doc, { ifNoneMatch: true })
   return doc.id
-}
-
-// Deleting a board deletes what this Möbius kept about it: its cards'
-// activity (private boards), the assignment changes it noticed, and the
-// personal view choices remembered for it. A shared board's host deletes the
-// board's own records (collaboration/service.py). The board goes first; every
-// cleanup is attempted, and any that failed is reported as an error.
-export async function deleteBoard(id, s = store()) {
-  await s.remove(boardPath(id))
-  const prefix = activityPrefix(id)
-  const results = await Promise.allSettled([
-    s.list(prefix).then(items => Promise.all((Array.isArray(items) ? items : []).map(item => s.remove(`${prefix}${item.name}`)))),
-    s.remove(assignmentLogPath(id)),
-    forgetBoardViews(id, s),
-  ])
-  const failed = results.find(result => result.status === 'rejected')
-  if (failed) throw new Error(`The board was deleted, but some of its history could not be: ${failed.reason?.message || failed.reason}`)
 }
 
 // The per-board entries of ui.json, which are personal and never shared.
